@@ -234,6 +234,7 @@ impl<F: FieldExt> IsZeroGadget<F> {
         // TODO: need access to `r` here?
         let r = F::one();
 
+        // Calculate compressed `a`
         let mut a = F::zero();
         for idx in 0..32 {
             a = a * r + F::from_u64(execution_step.values[0][idx].into());
