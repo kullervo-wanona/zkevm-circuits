@@ -145,10 +145,7 @@ impl<F: FieldExt> OpGadget<F> for IsZeroGadget<F> {
         };
 
         let stack_underflow = {
-            let (zero, minus_one) = (
-                Expression::Constant(F::from_u64(1024)),
-                Expression::Constant(F::from_u64(1023)),
-            );
+            let zero = Expression::Constant(F::from_u64(1024));
             let stack_pointer = state_curr.stack_pointer.expr();
             Constraint {
                 name: "IsZero stack underflow",
@@ -156,8 +153,7 @@ impl<F: FieldExt> OpGadget<F> for IsZeroGadget<F> {
                 polys: vec![
                     common_polys.clone(),
                     vec![
-                        (stack_pointer.clone() - zero)
-                            * (stack_pointer - minus_one),
+                        (stack_pointer.clone() - zero),
                     ],
                 ]
                 .concat(),
