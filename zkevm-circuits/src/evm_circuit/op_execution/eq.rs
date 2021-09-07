@@ -19,7 +19,6 @@ struct EqSuccessAllocation<F> {
     case_selector: Cell<F>,
     a: Cell<F>,
     b: Cell<F>,
-    result: Cell<F>,
     diff_inv: Cell<F>,
 }
 
@@ -40,7 +39,7 @@ impl<F: FieldExt> OpGadget<F> for EqGadget<F> {
         CaseConfig {
             case: Case::Success,
             num_word: 0,
-            num_cell: 4, // a + b + result + diff_inv
+            num_cell: 3, // a + b + diff_inv
             will_halt: false,
         },
         CaseConfig {
@@ -65,7 +64,6 @@ impl<F: FieldExt> OpGadget<F> for EqGadget<F> {
                 case_selector: success.selector.clone(),
                 a: success.cells.pop().unwrap(),
                 b: success.cells.pop().unwrap(),
-                result: success.cells.pop().unwrap(),
                 diff_inv: success.cells.pop().unwrap(),
             },
             stack_underflow: stack_underflow.selector.clone(),
@@ -108,7 +106,6 @@ impl<F: FieldExt> OpGadget<F> for EqGadget<F> {
                 case_selector,
                 a,
                 b,
-                result,
                 diff_inv,
             } = &self.success;
 
@@ -137,7 +134,7 @@ impl<F: FieldExt> OpGadget<F> for EqGadget<F> {
                 }),
                 Lookup::BusMappingLookup(BusMappingLookup::Stack {
                     index_offset: 1,
-                    value: result.expr(),
+                    value: is_zero_expression,
                     is_write: true,
                 }),
             ];
@@ -265,11 +262,6 @@ impl<F: FieldExt> EqGadget<F> {
 
         self.success.a.assign(region, offset, Some(a))?;
         self.success.b.assign(region, offset, Some(b))?;
-        self.success.result.assign(
-            region,
-            offset,
-            Some(F::from_u64(execution_step.values[2][0] as u64)),
-        )?;
         self.success.diff_inv.assign(region, offset, Some(diff_inv))?;
 
         self.success
