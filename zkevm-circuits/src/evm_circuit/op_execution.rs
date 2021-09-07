@@ -15,9 +15,11 @@ use std::{collections::HashMap, ops::Range};
 
 mod arithmetic;
 mod push;
+mod byte;
 
 use arithmetic::AddGadget;
 use push::PushGadget;
+use byte::ByteGadget;
 
 fn bool_switches_constraints<F: FieldExt>(
     bool_switches: &[Cell<F>],
@@ -208,6 +210,7 @@ pub(crate) struct OpExecutionGadget<F> {
     preset_map: HashMap<(usize, Case), Preset<F>>,
     add_gadget: AddGadget<F>,
     push_gadget: PushGadget<F>,
+    byte_gadget: ByteGadget<F>,
 }
 
 impl<F: FieldExt> OpExecutionGadget<F> {
@@ -262,6 +265,7 @@ impl<F: FieldExt> OpExecutionGadget<F> {
 
         construct_op_gadget!(add_gadget);
         construct_op_gadget!(push_gadget);
+        construct_op_gadget!(byte_gadget);
         let _ = qs_op_idx;
 
         for constraint in constraints.into_iter() {
@@ -299,6 +303,7 @@ impl<F: FieldExt> OpExecutionGadget<F> {
             resumption,
             add_gadget,
             push_gadget,
+            byte_gadget,
         }
     }
 
@@ -511,6 +516,12 @@ impl<F: FieldExt> OpExecutionGadget<F> {
                 )?,
                 // PUSH1, ..., PUSH32
                 OpcodeId(0x60..=0x7f) => self.push_gadget.assign(
+                    region,
+                    offset,
+                    core_state,
+                    execution_step,
+                )?,
+                OpcodeId::BYTE => self.byte_gadget.assign(
                     region,
                     offset,
                     core_state,
