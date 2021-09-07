@@ -22,6 +22,8 @@ struct ByteSuccessAllocation<F> {
     word_idx: Word<F>,
     value: Word<F>,
     result: Word<F>,
+    sum_inv: Cell<F>,
+    diff_inv: [Cell<F>; 32],
 }
 
 #[derive(Clone, Debug)]
@@ -40,8 +42,8 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
     const CASE_CONFIGS: &'static [CaseConfig] = &[
         CaseConfig {
             case: Case::Success,
-            num_word: 3,
-            num_cell: 0,
+            num_word: 3,  // value + idx + result
+            num_cell: 33, // 1 sum_inv + 32 diff_inv
             will_halt: false,
         },
         CaseConfig {
@@ -67,6 +69,8 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
                 word_idx: success.words.pop().unwrap(),
                 value: success.words.pop().unwrap(),
                 result: success.words.pop().unwrap(),
+                sum_inv: success.cells.pop().unwrap(),
+                diff_inv: success.cells.try_into().unwrap(),
             },
             stack_underflow: stack_underflow.selector.clone(),
             out_of_gas: (
@@ -81,10 +85,10 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
         state_curr: &OpExecutionState<F>,
         state_next: &OpExecutionState<F>,
     ) -> Vec<Constraint<F>> {
-        let eq =
+        let byte =
             Expression::Constant(F::from_u64(OPCODE.as_u8().into()));
         let OpExecutionState { opcode, .. } = &state_curr;
-        let common_polys = vec![(opcode.expr() - eq.clone())];
+        let common_polys = vec![(opcode.expr() - byte.clone())];
 
         let success = {
             // interpreter state transition constraints
@@ -109,11 +113,43 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
                 value,
                 word_idx,
                 result,
+                sum_inv,
+                diff_inv,
             } = &self.success;
 
+            // If any of the bytes (except the LSB) we shouldn't copy any bytes
+            let mut byte_sum = Expression::Constant(F::from_u64(0));
+            for idx in 1..31 {
+                byte_sum = byte_sum + word_idx.cells[idx as usize].expr()
+            }
+
+            let is_sum_zero_expression = one.clone() - byte_sum.clone() * sum_inv.expr();
             let mut byte_constraints = vec![];
+            let mut is_zero_constraints = vec![
+                byte_sum.clone() * is_sum_zero_expression.clone(),
+                sum_inv.expr().clone() * is_sum_zero_expression.clone(),
+            ];
+            byte_constraints.append(&mut is_zero_constraints);
+
+            // Step over each byte and copy if needed
             for idx in 0..31 {
-                // TODO
+                // Check if this byte was selected looking only at the LSB
+                let diff = word_idx.cells[0].expr() - Expression::Constant(F::from_u64(31 - idx));
+                let is_zero_expression = one.clone() - diff.clone() * diff_inv[idx as usize].expr();
+                let mut is_zero_constraints = vec![
+                    diff.clone() * is_zero_expression.clone(),
+                    diff_inv[idx as usize].expr().clone() * is_zero_expression.clone(),
+                ];
+                byte_constraints.append(&mut is_zero_constraints);
+
+                // Copy the the byte when needed
+                let mut local_byte_constraints = vec![
+                    // when `diff == 0` and `byte_sum == 0` we need to copy the byte
+                    is_zero_expression * is_sum_zero_expression.clone() * (value.cells[idx as usize].expr() - result.cells[idx as usize].expr()),
+                    // when `diff != 0` then result needs to be `0`
+                    diff * result.cells[idx as usize].expr()
+                ];
+                byte_constraints.append(&mut local_byte_constraints);
             }
 
             #[allow(clippy::suspicious_operation_groupings)]
@@ -179,7 +215,7 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
             let gas_overdemand = state_curr.gas_counter.expr() + three.clone()
                 - gas_available.expr();
             Constraint {
-                name: "Eq out of gas",
+                name: "Byte out of gas",
                 selector: case_selector.expr(),
                 polys: [
                     common_polys,
@@ -253,6 +289,22 @@ impl<F: FieldExt> ByteGadget<F> {
             Some(execution_step.values[2]),
         )?;
 
+        for (i, alloc) in self.success.diff_inv.iter().enumerate() {
+            let diff_inv = (F::from_u64(execution_step.values[0][0] as u64) - F::from_u64((31 - i) as u64)).invert().unwrap_or(F::zero());
+            alloc.assign(region, offset, Some(diff_inv))?;
+        }
+
+        let mut byte_sum = F::from_u64(0);
+        for idx in 1..31 {
+            byte_sum += F::from_u64(execution_step.values[0][idx] as u64);
+        }
+        let sum_inv = byte_sum.invert().unwrap_or(F::zero());
+        self.success.sum_inv.assign(
+            region,
+            offset,
+            Some(sum_inv),
+        )?;
+
         self.success
             .case_selector
             .assign(region, offset, Some(F::from_u64(1)))
@@ -281,7 +333,7 @@ mod test {
 
     #[test]
     fn byte_gadget() {
-        // Select byte 3
+        // Select byte 29 (MSB is at 0)
         try_test_circuit!(
             vec![
                 ExecutionStep {
@@ -305,7 +357,7 @@ mod test {
                     case: Case::Success,
                     values: vec![
                         [
-                            2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                            29, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                             0, //
                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                         ],
@@ -321,7 +373,7 @@ mod test {
                     case: Case::Success,
                     values: vec![
                         [
-                            2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                            29, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                             0, //
                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                         ],
@@ -357,7 +409,7 @@ mod test {
                     values: [
                         Base::zero(),
                         Base::from_u64(1022),
-                        Base::from_u64(2),
+                        Base::from_u64(29),
                         Base::zero(),
                     ]
                 },
@@ -368,7 +420,7 @@ mod test {
                     values: [
                         Base::zero(),
                         Base::from_u64(1022),
-                        Base::from_u64(2),
+                        Base::from_u64(29),
                         Base::zero(),
                     ]
                 },
@@ -397,7 +449,7 @@ mod test {
             ],
             Ok(())
         );
-        // Select byte 32
+        // Select byte 256 + 29
         try_test_circuit!(
             vec![
                 ExecutionStep {
@@ -417,16 +469,16 @@ mod test {
                     ],
                 },
                 ExecutionStep {
-                    opcode: OpcodeId::PUSH1,
+                    opcode: OpcodeId::PUSH2,
                     case: Case::Success,
                     values: vec![
                         [
-                            32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                            29, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                             0, //
                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                         ],
                         [
-                            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                            1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                             0, //
                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                         ]
@@ -437,7 +489,7 @@ mod test {
                     case: Case::Success,
                     values: vec![
                         [
-                            32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                            29, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                             0, //
                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                         ],
@@ -473,7 +525,7 @@ mod test {
                     values: [
                         Base::zero(),
                         Base::from_u64(1022),
-                        Base::from_u64(32),
+                        Base::from_u64(1 + 29),
                         Base::zero(),
                     ]
                 },
@@ -484,7 +536,7 @@ mod test {
                     values: [
                         Base::zero(),
                         Base::from_u64(1022),
-                        Base::from_u64(32),
+                        Base::from_u64(1 + 29),
                         Base::zero(),
                     ]
                 },
