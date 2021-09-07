@@ -18,7 +18,6 @@ pub const GAS: u64 = 3;
 struct IsZeroSuccessAllocation<F> {
     case_selector: Cell<F>,
     a: Cell<F>,
-    result: Cell<F>,
     a_inv: Cell<F>,
 }
 
@@ -39,7 +38,7 @@ impl<F: FieldExt> OpGadget<F> for IsZeroGadget<F> {
         CaseConfig {
             case: Case::Success,
             num_word: 0,
-            num_cell: 3, // a + result + a_inv
+            num_cell: 2, // a + a_inv
             will_halt: false,
         },
         CaseConfig {
@@ -63,7 +62,6 @@ impl<F: FieldExt> OpGadget<F> for IsZeroGadget<F> {
             success: IsZeroSuccessAllocation {
                 case_selector: success.selector.clone(),
                 a: success.cells.pop().unwrap(),
-                result: success.cells.pop().unwrap(),
                 a_inv: success.cells.pop().unwrap(),
             },
             stack_underflow: stack_underflow.selector.clone(),
@@ -105,7 +103,6 @@ impl<F: FieldExt> OpGadget<F> for IsZeroGadget<F> {
             let IsZeroSuccessAllocation {
                 case_selector,
                 a,
-                result,
                 a_inv,
             } = &self.success;
 
@@ -126,7 +123,7 @@ impl<F: FieldExt> OpGadget<F> for IsZeroGadget<F> {
                 }),
                 Lookup::BusMappingLookup(BusMappingLookup::Stack {
                     index_offset: 0,
-                    value: result.expr(),
+                    value: is_zero_expression,
                     is_write: true,
                 }),
             ];
@@ -238,11 +235,6 @@ impl<F: FieldExt> IsZeroGadget<F> {
         let a_inv = a.invert().unwrap_or(F::zero());
 
         self.success.a.assign(region, offset, Some(a))?;
-        self.success.result.assign(
-            region,
-            offset,
-            Some(F::from_u64(execution_step.values[1][0] as u64)),
-        )?;
         self.success.a_inv.assign(region, offset, Some(a_inv))?;
 
         self.success
