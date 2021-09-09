@@ -43,7 +43,7 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
         CaseConfig {
             case: Case::Success,
             num_word: 3,  // value + idx + result
-            num_cell: 33, // 1 sum_inv + 32 diff_inv
+            num_cell: 33, // sum_inv + 32 diff_inv
             will_halt: false,
         },
         CaseConfig {
@@ -85,8 +85,7 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
         state_curr: &OpExecutionState<F>,
         state_next: &OpExecutionState<F>,
     ) -> Vec<Constraint<F>> {
-        let byte =
-            Expression::Constant(F::from_u64(OPCODE.as_u8().into()));
+        let byte = Expression::Constant(F::from_u64(OPCODE.as_u8().into()));
         let OpExecutionState { opcode, .. } = &state_curr;
         let common_polys = vec![(opcode.expr() - byte.clone())];
 
@@ -117,39 +116,53 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
                 diff_inv,
             } = &self.success;
 
-            // If any of the bytes (except the LSB) we shouldn't copy any bytes
-            let mut byte_sum = Expression::Constant(F::from_u64(0));
-            for idx in 1..31 {
-                byte_sum = byte_sum + word_idx.cells[idx as usize].expr()
+            // If any of the non-LSB bytes are non-zero of the index word we never need to copy any bytes.
+            // So just sum all the non-LSB byte values here and then check if it's non-zero
+            // so we can use that as an additional condition when to copy the byte value.
+            let mut index_byte_sum = Expression::Constant(F::from_u64(0));
+            for idx in 1..32 {
+                index_byte_sum =
+                    index_byte_sum + word_idx.cells[idx as usize].expr()
             }
-
-            let is_sum_zero_expression = one.clone() - byte_sum.clone() * sum_inv.expr();
+            let is_sum_zero_expression =
+                one.clone() - index_byte_sum.clone() * sum_inv.expr();
             let mut byte_constraints = vec![];
             let mut is_zero_constraints = vec![
-                byte_sum.clone() * is_sum_zero_expression.clone(),
+                index_byte_sum.clone() * is_sum_zero_expression.clone(),
                 sum_inv.expr().clone() * is_sum_zero_expression.clone(),
             ];
             byte_constraints.append(&mut is_zero_constraints);
 
-            // Step over each byte and copy if needed
-            for idx in 0..31 {
-                // Check if this byte was selected looking only at the LSB
-                let diff = word_idx.cells[0].expr() - Expression::Constant(F::from_u64(31 - idx));
-                let is_zero_expression = one.clone() - diff.clone() * diff_inv[idx as usize].expr();
+            // Now we just need to check that `result` is the sum of all copied bytes.
+            // We go byte by byte and check if `idx - stack.idx` is zero.
+            // If it's zero (at most once) we add the byte value to the sum, else we add 0.
+            // The additional condition for this is that none of the non-LSB bytes are non-zero, see above.
+            // At the end this sum needs to equal result.
+            let mut result_sum_expr = result.cells[0].expr();
+            for idx in 0..32 {
+                // Check if this byte was selected looking only at the LSB of the index word
+                let diff = word_idx.cells[0].expr()
+                    - Expression::Constant(F::from_u64(31 - idx));
+                let is_zero_expression =
+                    one.clone() - diff.clone() * diff_inv[idx as usize].expr();
                 let mut is_zero_constraints = vec![
-                    diff.clone() * is_zero_expression.clone(),
-                    diff_inv[idx as usize].expr().clone() * is_zero_expression.clone(),
+                    diff * is_zero_expression.clone(),
+                    diff_inv[idx as usize].expr().clone()
+                        * is_zero_expression.clone(),
                 ];
                 byte_constraints.append(&mut is_zero_constraints);
 
-                // Copy the the byte when needed
-                let mut local_byte_constraints = vec![
-                    // when `diff == 0` and `byte_sum == 0` we need to copy the byte
-                    is_zero_expression * is_sum_zero_expression.clone() * (value.cells[idx as usize].expr() - result.cells[idx as usize].expr()),
-                    // when `diff != 0` then result needs to be `0`
-                    diff * result.cells[idx as usize].expr()
-                ];
-                byte_constraints.append(&mut local_byte_constraints);
+                // Add the byte to the sum when this byte was selected
+                result_sum_expr = result_sum_expr
+                    - is_zero_expression
+                        * is_sum_zero_expression.clone()
+                        * value.cells[idx as usize].expr();
+            }
+            byte_constraints.push(result_sum_expr);
+
+            // All bytes of result, except for the LSB, always need to be 0.
+            for idx in 1..32 {
+                byte_constraints.push(result.cells[idx as usize].expr());
             }
 
             #[allow(clippy::suspicious_operation_groupings)]
@@ -215,7 +228,7 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
             let gas_overdemand = state_curr.gas_counter.expr() + three.clone()
                 - gas_available.expr();
             Constraint {
-                name: "Byte out of gas",
+                name: "BYTE out of gas",
                 selector: case_selector.expr(),
                 polys: [
                     common_polys,
@@ -259,7 +272,6 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
 }
 
 impl<F: FieldExt> ByteGadget<F> {
-
     fn assign_success(
         &self,
         region: &mut Region<'_, F>,
@@ -271,7 +283,6 @@ impl<F: FieldExt> ByteGadget<F> {
         op_execution_state.program_counter += PC_DELTA as usize;
         op_execution_state.stack_pointer += SP_DELTA as usize;
         op_execution_state.gas_counter += GAS as usize;
-
 
         self.success.word_idx.assign(
             region,
@@ -290,20 +301,19 @@ impl<F: FieldExt> ByteGadget<F> {
         )?;
 
         for (i, alloc) in self.success.diff_inv.iter().enumerate() {
-            let diff_inv = (F::from_u64(execution_step.values[0][0] as u64) - F::from_u64((31 - i) as u64)).invert().unwrap_or(F::zero());
+            let diff_inv = (F::from_u64(execution_step.values[0][0] as u64)
+                - F::from_u64((31 - i) as u64))
+            .invert()
+            .unwrap_or(F::zero());
             alloc.assign(region, offset, Some(diff_inv))?;
         }
 
         let mut byte_sum = F::from_u64(0);
-        for idx in 1..31 {
+        for idx in 1..32 {
             byte_sum += F::from_u64(execution_step.values[0][idx] as u64);
         }
         let sum_inv = byte_sum.invert().unwrap_or(F::zero());
-        self.success.sum_inv.assign(
-            region,
-            offset,
-            Some(sum_inv),
-        )?;
+        self.success.sum_inv.assign(region, offset, Some(sum_inv))?;
 
         self.success
             .case_selector
@@ -383,7 +393,7 @@ mod test {
                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                         ],
                         [
-                            0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                            3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                             0, //
                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                         ]
@@ -442,7 +452,7 @@ mod test {
                     values: [
                         Base::zero(),
                         Base::from_u64(1023),
-                        Base::from_u64(0 + 0 + 3),
+                        Base::from_u64(3),
                         Base::zero(),
                     ]
                 },
