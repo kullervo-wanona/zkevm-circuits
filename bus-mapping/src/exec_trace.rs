@@ -426,7 +426,7 @@ mod trace_tests {
             },
             depth: 1u8,
             pc: ProgramCounter::from(7),
-            gc: GlobalCounter::from(2),
+            gc: GlobalCounter::from(1),
             bus_mapping_instance: vec![],
         };
 
@@ -435,7 +435,7 @@ mod trace_tests {
             .bus_mapping_instance_mut()
             .push(container.insert(StackOp::new(
                 RW::READ,
-                GlobalCounter(3usize),
+                GlobalCounter(2usize),
                 StackAddress::from(1023),
                 EvmWord::from(0x40u8),
             )));
@@ -444,7 +444,7 @@ mod trace_tests {
         step_2.bus_mapping_instance_mut().push(container.insert(
             MemoryOp::new(
                 RW::READ,
-                GlobalCounter(4usize),
+                GlobalCounter(3usize),
                 0x40.into(),
                 EvmWord::from(0x80u8),
             ),
@@ -455,7 +455,7 @@ mod trace_tests {
             .bus_mapping_instance_mut()
             .push(container.insert(StackOp::new(
                 RW::WRITE,
-                GlobalCounter(5usize),
+                GlobalCounter(4usize),
                 StackAddress::from(1023),
                 EvmWord::from(0x80u8),
             )));
@@ -471,7 +471,7 @@ mod trace_tests {
             },
             depth: 1u8,
             pc: ProgramCounter::from(8),
-            gc: GlobalCounter::from(6),
+            gc: GlobalCounter::from(4),
             bus_mapping_instance: vec![],
         };
 

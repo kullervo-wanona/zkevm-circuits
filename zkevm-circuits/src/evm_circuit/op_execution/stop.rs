@@ -95,10 +95,8 @@ mod test {
     fn stop_gadget() {
         try_test_circuit!(
             bytecode![
-                (PUSH, 2, BigUint::from(0x1020u64)),
-                (PUSH2, BigUint::from(0x3040u64)),
-                ADD,
-                POP
+                (PUSH, 1, BigUint::from(0x10u64)),
+                (PUSH1, BigUint::from(0x30u64))
             ],
             Ok(())
         );
