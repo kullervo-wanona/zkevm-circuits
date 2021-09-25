@@ -61,8 +61,9 @@ impl FromStr for EvmWord {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let str_value = if s.starts_with("0x") { &s[2..] } else { &s[..] };
         Ok(EvmWord(
-            BigUint::from_str_radix(s, 16)
+            BigUint::from_str_radix(str_value, 16)
                 .map_err(|_| Error::EvmWordParsing)?,
         ))
     }

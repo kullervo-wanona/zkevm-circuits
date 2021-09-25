@@ -17,10 +17,12 @@ use std::{collections::HashMap, ops::Range};
 mod arithmetic;
 mod comparator;
 mod push;
+mod stop;
 
 use arithmetic::AddGadget;
 use comparator::LtGadget;
 use push::PushGadget;
+use stop::StopGadget;
 
 fn bool_switches_constraints<F: FieldExt>(
     bool_switches: &[Cell<F>],
@@ -210,6 +212,7 @@ pub(crate) struct OpExecutionGadget<F> {
     add_gadget: AddGadget<F>,
     push_gadget: PushGadget<F>,
     lt_gadget: LtGadget<F>,
+    stop_gadget: StopGadget<F>,
 }
 
 impl<F: FieldExt> OpExecutionGadget<F> {
@@ -266,6 +269,7 @@ impl<F: FieldExt> OpExecutionGadget<F> {
         construct_op_gadget!(add_gadget);
         construct_op_gadget!(push_gadget);
         construct_op_gadget!(lt_gadget);
+        construct_op_gadget!(stop_gadget);
         let _ = qs_op_idx;
 
         for constraint in constraints.into_iter() {
@@ -304,6 +308,7 @@ impl<F: FieldExt> OpExecutionGadget<F> {
             add_gadget,
             push_gadget,
             lt_gadget,
+            stop_gadget,
         }
     }
 
@@ -542,6 +547,12 @@ impl<F: FieldExt> OpExecutionGadget<F> {
                     execution_step,
                 )?,
                 (_, OpcodeId::LT | OpcodeId::GT) => self.lt_gadget.assign(
+                    region,
+                    offset,
+                    core_state,
+                    execution_step,
+                )?,
+                (_, OpcodeId::STOP) => self.stop_gadget.assign(
                     region,
                     offset,
                     core_state,

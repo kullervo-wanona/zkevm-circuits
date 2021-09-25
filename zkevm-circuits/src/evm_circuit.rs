@@ -276,7 +276,7 @@ impl CoreStateInstance {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Case {
+pub(crate) enum Case {
     Success,
     // out of gas
     OutOfGas,
@@ -309,17 +309,17 @@ enum Case {
 
 // TODO: use ExecutionStep from bus_mapping
 pub(crate) struct ExecutionStep {
-    opcode: OpcodeId,
-    case: Case,
-    values: Vec<BigUint>,
+    pub(crate) opcode: OpcodeId,
+    pub(crate) case: Case,
+    pub(crate) values: Vec<BigUint>,
 }
 
 // TODO: use Operation from bus_mapping
 pub(crate) struct Operation<F> {
-    gc: usize,
-    target: Target,
-    is_write: bool,
-    values: [F; 4],
+    pub(crate) gc: usize,
+    pub(crate) target: Target,
+    pub(crate) is_write: bool,
+    pub(crate) values: [F; 4],
 }
 
 #[derive(Clone)]

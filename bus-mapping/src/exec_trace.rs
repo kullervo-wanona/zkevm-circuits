@@ -225,7 +225,7 @@ impl<F: FieldExt> ExecutionTrace<F> {
                 )?;
                 // Sum 1 to counter so that we set the next exec_step GC to the
                 // correct index
-                gc += 1;
+                //gc += 1;
                 Ok(())
             },
         )?;
@@ -259,6 +259,12 @@ impl<F: FieldExt> ExecutionTrace<F> {
     /// that the `ExecutionTrace` holds.
     fn steps_mut(&mut self) -> &mut Vec<ExecutionStep> {
         &mut self.steps
+    }
+
+    /// Returns a reference to the [`ExecutionStep`] vector instance
+    /// that the `ExecutionTrace` holds.
+    pub fn ops(&self) -> &OperationContainer {
+        &self.container
     }
 
     /// Returns a mutable reference to the [`OperationContainer`] instance that

@@ -7,7 +7,7 @@ use core::str::FromStr;
 /// Represents a `StackAddress` of the EVM.
 /// The address range goes `TOP -> DOWN (1024, 0]`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
-pub struct StackAddress(pub(crate) usize);
+pub struct StackAddress(pub usize);
 
 impl StackAddress {
     /// Generates a new StackAddress given a `usize`.
@@ -39,7 +39,7 @@ impl FromStr for StackAddress {
 /// Represents a snapshot of the EVM stack state at a certain
 /// execution step height.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Stack(pub(crate) Vec<EvmWord>);
+pub struct Stack(pub Vec<EvmWord>);
 
 impl Stack {
     /// Generate an empty instance of EVM stack.

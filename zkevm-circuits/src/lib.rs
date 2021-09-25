@@ -7,12 +7,15 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(missing_debug_implementations)]
 #![deny(missing_docs)]
-#![deny(unsafe_code)]
+//#![deny(unsafe_code)]
 
 pub mod evm_circuit;
 pub mod gadget;
 pub mod state_circuit;
+pub mod tracer;
 pub mod util;
+#[macro_use]
+pub mod bytecode;
 
 #[cfg(test)]
 mod test_vectors;

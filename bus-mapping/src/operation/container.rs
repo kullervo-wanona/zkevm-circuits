@@ -83,4 +83,10 @@ impl OperationContainer {
             .sorted()
             .collect()
     }
+
+    /// Given a [`OperationRef`] return the actual [`Operation`] it is refering
+    /// to.
+    pub fn all_ops(&self) -> Vec<Operation> {
+        self.0.clone()
+    }
 }
