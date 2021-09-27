@@ -53,8 +53,8 @@ impl Bytecode {
             self.write(bytes[n - 1 - i]);
         }
         // Check if the full value could be pushed
-        for i in n..32 {
-            assert!(bytes[i] == 0u8, "value too big for PUSH{}", n);
+        for i in n..bytes.len() {
+            assert!(bytes[i] == 0u8, "value too big for PUSH{}: {}", n, value);
         }
         self
     }
@@ -68,7 +68,7 @@ macro_rules! bytecode_line {
         $code.write_op(bus_mapping::evm::OpcodeId::$x);
     }};
     // PUSHX op codes
-    ($code:expr, ($x:ident, $v: expr)) => {{
+    ($code:expr, ($x:ident $v: expr)) => {{
         let opcode_id = bus_mapping::evm::OpcodeId::$x.as_u8();
         assert!(
             bus_mapping::evm::OpcodeId::PUSH1.as_u8() <= opcode_id
@@ -78,12 +78,7 @@ macro_rules! bytecode_line {
         let n = bus_mapping::evm::OpcodeId::$x.as_u8()
             - bus_mapping::evm::OpcodeId::PUSH1.as_u8()
             + 1;
-        $code.push(n as usize, $v);
-    }};
-    // PUSH op codes with X as argument
-    ($code:expr, ($x:ident, $n: expr, $v: expr)) => {{
-        //assert!($x == "PUSH", "invalid push");
-        $code.push($n, $v);
+        $code.push(n as usize, $v.into());
     }};
 }
 
