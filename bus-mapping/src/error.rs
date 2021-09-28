@@ -10,12 +10,18 @@ pub enum Error {
     OpcodeParsing,
     /// Error while parsing a `MemoryAddress`.
     MemAddressParsing,
+    /// Error while parsing a `StackAddress`.
+    StackAddressParsing,
     /// Error while parsing an `EvmWord`.
     EvmWordParsing,
     /// Error while trying to convert to an incorrect `OpcodeId`.
     InvalidOpConversion,
     /// Serde de/serialization error.
     SerdeError,
+    /// Error while trying to access an invalid/empty Stack location.
+    InvalidStackPointer,
+    /// Error while trying to access an invalid/empty Memory location.
+    InvalidMemoryPointer,
 }
 
 impl Display for Error {

@@ -1,5 +1,6 @@
 //! The EVM circuit implementation.
 
+use crate::util::Expr;
 use bus_mapping::{evm::OpcodeId, operation::Target};
 use halo2::{
     arithmetic::FieldExt,
@@ -9,12 +10,13 @@ use halo2::{
     },
     poly::Rotation,
 };
+use num::BigUint;
 use std::{convert::TryInto, iter};
 
 mod op_execution;
 use op_execution::{OpExecutionGadget, OpExecutionState};
 mod param;
-use param::{CIRCUIT_HEIGHT, CIRCUIT_WIDTH, NUM_CELL_OP_EXECTION_STATE};
+use param::{CIRCUIT_HEIGHT, CIRCUIT_WIDTH, NUM_CELL_OP_EXECUTION_STATE};
 
 #[derive(Clone, Debug)]
 pub(crate) enum CallField {
@@ -44,7 +46,7 @@ pub(crate) enum CallField {
     // Value in wei of call.
     Value,
     // If call succeeds or not in the future.
-    IsPersistant,
+    IsPersistent,
     // If call is within a static call.
     IsStatic,
     // If call is `CREATE*`. We lookup op from calldata when is create,
@@ -125,15 +127,11 @@ pub(crate) enum BusMappingLookup<F> {
 }
 
 impl<F: FieldExt> BusMappingLookup<F> {
-    fn tag_expr(&self) -> Expression<F> {
-        Expression::Constant(self.tag())
-    }
-
-    fn tag(&self) -> F {
+    fn rw_target(&self) -> Target {
         match self {
-            Self::Stack { .. } => F::from_u64(Target::Stack as u64),
-            Self::Memory { .. } => F::from_u64(Target::Memory as u64),
-            Self::AccountStorage { .. } => F::from_u64(Target::Storage as u64),
+            Self::Stack { .. } => Target::Stack,
+            Self::Memory { .. } => Target::Memory,
+            Self::AccountStorage { .. } => Target::Storage,
             _ => unimplemented!(),
         }
     }
@@ -149,6 +147,12 @@ pub(crate) enum FixedLookup {
     BitwiseAnd,
     BitwiseOr,
     BitwiseXor,
+}
+
+impl<F: FieldExt> Expr<F> for FixedLookup {
+    fn expr(&self) -> Expression<F> {
+        Expression::Constant(F::from_u64(*self as u64))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -168,16 +172,12 @@ struct Constraint<F> {
 pub(crate) struct Cell<F> {
     // expression for constraint
     expression: Expression<F>,
-    // relative position to selector for synthesis
     column: Column<Advice>,
+    // relative position to selector for synthesis
     rotation: usize,
 }
 
 impl<F: FieldExt> Cell<F> {
-    fn expr(&self) -> Expression<F> {
-        self.expression.clone()
-    }
-
     fn assign(
         &self,
         region: &mut Region<'_, F>,
@@ -198,12 +198,18 @@ impl<F: FieldExt> Cell<F> {
     }
 }
 
+impl<F: FieldExt> Expr<F> for Cell<F> {
+    fn expr(&self) -> Expression<F> {
+        self.expression.clone()
+    }
+}
+
 // TODO: Integrate with evm_word
 #[derive(Clone, Debug)]
 struct Word<F> {
     // random linear combination expression of cells
     expression: Expression<F>,
-    // inner cells for syntesis
+    // inner cells for synthesis
     cells: [Cell<F>; 32],
 }
 
@@ -214,15 +220,9 @@ impl<F: FieldExt> Word<F> {
             expression: cells
                 .iter()
                 .rev()
-                .fold(Expression::Constant(F::zero()), |acc, byte| {
-                    acc * r.clone() + byte.expr()
-                }),
+                .fold(0.expr(), |acc, byte| acc * r.clone() + byte.expr()),
             cells: cells.to_owned().try_into().unwrap(),
         }
-    }
-
-    fn expr(&self) -> Expression<F> {
-        self.expression.clone()
     }
 
     fn assign(
@@ -240,6 +240,12 @@ impl<F: FieldExt> Word<F> {
                 })
                 .collect()
         })
+    }
+}
+
+impl<F: FieldExt> Expr<F> for Word<F> {
+    fn expr(&self) -> Expression<F> {
+        self.expression.clone()
     }
 }
 
@@ -304,7 +310,7 @@ enum Case {
 pub(crate) struct ExecutionStep {
     opcode: OpcodeId,
     case: Case,
-    values: Vec<[u8; 32]>,
+    values: Vec<BigUint>,
 }
 
 // TODO: use Operation from bus_mapping
@@ -427,16 +433,8 @@ impl<F: FieldExt> EvmCircuit<F> {
                 });
             }
 
-            vec![Expression::Constant(F::zero())]
+            vec![0.expr()]
         });
-
-        // TODO: Enable this when switch to kzg branch and remove the failure
-        //       VerifyFailure::ConstraintPoison
-        // meta.create_gate("Query byte lookup as a synthetic selector", |meta| {
-        //     let expr = meta.query_advice(qs_byte_lookup, Rotation::cur());
-
-        //     vec![expr.clone() * (Expression::Constant(F::one()) - expr)]
-        // });
 
         let mut cells_curr = Vec::with_capacity(CIRCUIT_WIDTH * CIRCUIT_HEIGHT);
         meta.create_gate("Query cells for current step", |meta| {
@@ -450,10 +448,10 @@ impl<F: FieldExt> EvmCircuit<F> {
                 }
             }
 
-            vec![Expression::Constant(F::zero())]
+            vec![0.expr()]
         });
 
-        let num_cells_next_asseccible = NUM_CELL_OP_EXECTION_STATE;
+        let num_cells_next_asseccible = NUM_CELL_OP_EXECUTION_STATE;
 
         let cells_next =
             &mut cells_curr[..num_cells_next_asseccible].to_vec()[..];
@@ -466,24 +464,24 @@ impl<F: FieldExt> EvmCircuit<F> {
                 );
             }
 
-            vec![Expression::Constant(F::zero())]
+            vec![0.expr()]
         });
 
         let op_execution_state_curr =
-            OpExecutionState::new(&cells_curr[..NUM_CELL_OP_EXECTION_STATE]);
+            OpExecutionState::new(&cells_curr[..NUM_CELL_OP_EXECUTION_STATE]);
         let op_execution_state_next =
-            OpExecutionState::new(&cells_next[..NUM_CELL_OP_EXECTION_STATE]);
+            OpExecutionState::new(&cells_next[..NUM_CELL_OP_EXECUTION_STATE]);
         let op_execution_free_cells =
-            cells_curr[NUM_CELL_OP_EXECTION_STATE..].to_vec();
+            cells_curr[NUM_CELL_OP_EXECUTION_STATE..].to_vec();
 
-        let mut qs_op_execution = Expression::Constant(F::zero());
+        let mut qs_op_execution = 0.expr();
         meta.create_gate(
             "Query synthetic selector for OpExecutionGadget",
             |meta| {
                 qs_op_execution = meta.query_selector(q_step)
                     * op_execution_state_curr.is_executing.expr();
 
-                vec![Expression::Constant(F::zero())]
+                vec![0.expr()]
             },
         );
 
@@ -507,22 +505,18 @@ impl<F: FieldExt> EvmCircuit<F> {
     ) {
         // TODO: call_lookups
         // TODO: bytecode_lookups
-        // TODO: rw_lookups
 
         let mut fixed_lookups = Vec::<[Expression<F>; 4]>::new();
         let mut rw_lookups = Vec::<[Expression<F>; 7]>::new();
 
         for (qs_lookup, lookups) in independent_lookups {
-            let zero = Expression::Constant(F::zero());
             let mut fixed_lookup_count = 0;
             let mut rw_lookup_count = 0;
 
             for lookup in lookups {
                 match lookup {
                     Lookup::FixedLookup(tag, exprs) => {
-                        let tag_expr =
-                            Expression::Constant(F::from_u64(tag as u64));
-                        let exprs = iter::once(tag_expr).chain(exprs.clone());
+                        let exprs = iter::once(tag.expr()).chain(exprs.clone());
 
                         if fixed_lookups.len() == fixed_lookup_count {
                             fixed_lookups.push(
@@ -542,7 +536,15 @@ impl<F: FieldExt> EvmCircuit<F> {
                         }
                         fixed_lookup_count += 1;
                     }
-                    Lookup::BusMappingLookup(bm_lookup) => {
+                    Lookup::BusMappingLookup(
+                        rw_lookup
+                        @
+                        (BusMappingLookup::Stack { .. }
+                        | BusMappingLookup::Memory { .. }
+                        | BusMappingLookup::AccountStorage {
+                            ..
+                        }),
+                    ) => {
                         let OpExecutionState {
                             global_counter,
                             call_id,
@@ -551,56 +553,37 @@ impl<F: FieldExt> EvmCircuit<F> {
                         } = &op_execution_state_curr;
 
                         if rw_lookups.len() == rw_lookup_count {
-                            rw_lookups.push(
-                                vec![zero.clone(); 7].try_into().unwrap(),
-                            );
+                            rw_lookups
+                                .push(vec![0.expr(); 7].try_into().unwrap());
                         }
 
                         let mut exprs = vec![
-                            global_counter.expr()
-                                + Expression::Constant(F::from_u64(
-                                    rw_lookup_count as u64,
-                                )),
-                            bm_lookup.tag_expr(),
+                            global_counter.expr() + rw_lookup_count.expr(),
+                            rw_lookup.rw_target().expr(),
                         ];
-                        exprs.extend(match bm_lookup {
+                        exprs.extend(match rw_lookup {
                             BusMappingLookup::Stack {
                                 is_write,
                                 index_offset,
                                 value,
-                            } => {
-                                let stack_index = stack_pointer.expr()
-                                    + Expression::Constant(
-                                        F::from_u64(index_offset.abs() as u64)
-                                            * if index_offset.is_negative() {
-                                                -F::one()
-                                            } else {
-                                                F::one()
-                                            },
-                                    );
-                                [
-                                    Expression::Constant(F::from_u64(
-                                        is_write as u64,
-                                    )),
-                                    call_id.expr(),
-                                    stack_index,
-                                    value,
-                                    zero.clone(),
-                                ]
-                            }
+                            } => [
+                                is_write.expr(),
+                                call_id.expr(),
+                                stack_pointer.expr() + index_offset.expr(),
+                                value,
+                                0.expr(),
+                            ],
                             BusMappingLookup::Memory {
                                 is_write,
                                 call_id,
                                 index,
                                 value,
                             } => [
-                                Expression::Constant(F::from_u64(
-                                    is_write as u64,
-                                )),
+                                is_write.expr(),
                                 call_id,
                                 index,
                                 value,
-                                zero.clone(),
+                                0.expr(),
                             ],
                             BusMappingLookup::AccountStorage {
                                 is_write,
@@ -609,9 +592,7 @@ impl<F: FieldExt> EvmCircuit<F> {
                                 value,
                                 value_prev,
                             } => [
-                                Expression::Constant(F::from_u64(
-                                    is_write as u64,
-                                )),
+                                is_write.expr(),
                                 address,
                                 location,
                                 value,
@@ -629,24 +610,22 @@ impl<F: FieldExt> EvmCircuit<F> {
 
                         rw_lookup_count += 1;
                     }
+                    _ => unimplemented!(),
                 }
             }
         }
 
         // Configure whole row lookups by qs_byte_lookup
-        let zero = Expression::Constant(F::zero());
         for column in advices {
             meta.lookup(|meta| {
-                let tag = Expression::Constant(F::from_u64(
-                    FixedLookup::Range256 as u64,
-                ));
+                let tag = FixedLookup::Range256.expr();
                 let qs_byte_lookup =
                     meta.query_advice(qs_byte_lookup, Rotation::cur());
                 [
                     qs_byte_lookup.clone() * tag,
                     qs_byte_lookup * meta.query_advice(column, Rotation::cur()),
-                    zero.clone(),
-                    zero.clone(),
+                    0.expr(),
+                    0.expr(),
                 ]
                 .iter()
                 .zip(fixed_table.iter())

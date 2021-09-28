@@ -3,9 +3,9 @@ use super::super::{
     FixedLookup, Lookup, Word,
 };
 use super::{CaseAllocation, CaseConfig, OpExecutionState, OpGadget};
-use bus_mapping::evm::OpcodeId;
-use halo2::plonk::Error;
-use halo2::{arithmetic::FieldExt, circuit::Region, plonk::Expression};
+use crate::util::{Expr, ToWord};
+use bus_mapping::evm::{GasCost, OpcodeId};
+use halo2::{arithmetic::FieldExt, circuit::Region, plonk::Error};
 use std::{array, convert::TryInto};
 
 #[derive(Clone, Debug)]
@@ -105,33 +105,28 @@ impl<F: FieldExt> OpGadget<F> for PushGadget<F> {
         state_curr: &OpExecutionState<F>,
         state_next: &OpExecutionState<F>,
     ) -> Vec<Constraint<F>> {
-        let push1 =
-            Expression::Constant(F::from_u64(OpcodeId::PUSH1.as_u8() as u64));
         let OpExecutionState { opcode, .. } = &state_curr;
 
-        let zero = Expression::Constant(F::zero());
         let common_lookups = vec![Lookup::FixedLookup(
             FixedLookup::Range32,
-            [opcode.expr() - push1.clone(), zero.clone(), zero],
+            [opcode.expr() - OpcodeId::PUSH1.expr(), 0.expr(), 0.expr()],
         )];
 
         let success = {
-            let one = Expression::Constant(F::one());
-            let num_pushed = opcode.expr() - push1 + one.clone();
+            let num_pushed = opcode.expr() - OpcodeId::PUSH1.expr() + 1.expr();
 
             // interpreter state transition constraints
             let state_transition_constraints = vec![
                 state_next.global_counter.expr()
-                    - (state_curr.global_counter.expr() + one.clone()),
+                    - (state_curr.global_counter.expr() + 1.expr()),
                 state_next.program_counter.expr()
                     - (state_curr.program_counter.expr()
-                        + one.clone()
+                        + 1.expr()
                         + num_pushed.clone()),
                 state_next.stack_pointer.expr()
-                    - (state_curr.stack_pointer.expr() - one.clone()),
+                    - (state_curr.stack_pointer.expr() - 1.expr()),
                 state_next.gas_counter.expr()
-                    - (state_curr.gas_counter.expr()
-                        + Expression::Constant(F::from_u64(3))),
+                    - (state_curr.gas_counter.expr() + GasCost::FASTEST.expr()),
             ];
 
             let PushSuccessAllocation {
@@ -147,54 +142,29 @@ impl<F: FieldExt> OpGadget<F> for PushGadget<F> {
                 if idx > 0 {
                     let diff =
                         selectors[idx - 1].expr() - selectors[idx].expr();
-                    push_constraints.push(diff.clone() * (one.clone() - diff));
+                    push_constraints.push(diff.clone() * (1.expr() - diff));
                 }
                 // selectors needs to be 0 or 1
                 push_constraints.push(
-                    selectors[idx].expr()
-                        * (one.clone() - selectors[idx].expr()),
+                    selectors[idx].expr() * (1.expr() - selectors[idx].expr()),
                 );
                 // word byte should be 0 when selector is 0
                 push_constraints.push(
-                    word.cells[idx].expr()
-                        * (one.clone() - selectors[idx].expr()),
+                    word.cells[idx].expr() * (1.expr() - selectors[idx].expr()),
                 );
             }
 
-            let selectors_sum = selectors
-                .iter()
-                .fold(Expression::Constant(F::zero()), |sum, s| sum + s.expr());
+            let selectors_sum =
+                selectors.iter().fold(0.expr(), |sum, s| sum + s.expr());
             push_constraints.push(selectors_sum - num_pushed);
 
-            let bus_mapping_lookups = [
-                // TODO: add 32 Bytecode lookups when supported
-                // selectors
-                //     .iter()
-                //     .zip(word.cells.iter())
-                //     .enumerate()
-                //     .map(|(idx, (selector, cell))| {
-                //         let OpExecutionState {
-                //             program_counter, ..
-                //         } = &state_curr;
-                //         Lookup::BusMappingLookup(BusMappingLookup::Bytecode {
-                //             hash: selector.expr() * hash,
-                //             index: selector.expr()
-                //                 * (program_counter.expr()
-                //                     + one.clone()
-                //                     + Expression::Constant(F::from_u64(
-                //                         idx as u64,
-                //                     ))),
-                //             value: cell.expr(),
-                //         })
-                //     })
-                //     .collect::<Vec<_>>(),
-                vec![Lookup::BusMappingLookup(BusMappingLookup::Stack {
+            let bus_mapping_lookups =
+                [vec![Lookup::BusMappingLookup(BusMappingLookup::Stack {
                     index_offset: -1,
                     value: word.expr(),
                     is_write: true,
-                })],
-            ]
-            .concat();
+                })]]
+                .concat();
 
             Constraint {
                 name: "PushGadget success",
@@ -216,21 +186,17 @@ impl<F: FieldExt> OpGadget<F> for PushGadget<F> {
         };
 
         let out_of_gas = {
-            let (one, two, three) = (
-                Expression::Constant(F::from_u64(1)),
-                Expression::Constant(F::from_u64(2)),
-                Expression::Constant(F::from_u64(3)),
-            );
             let (case_selector, gas_available) = &self.out_of_gas;
-            let gas_overdemand = state_curr.gas_counter.expr() + three.clone()
+            let gas_overdemand = state_curr.gas_counter.expr()
+                + GasCost::FASTEST.expr()
                 - gas_available.expr();
             Constraint {
                 name: "PushGadget out of gas",
                 selector: case_selector.expr(),
                 polys: vec![
-                    (gas_overdemand.clone() - one)
-                        * (gas_overdemand.clone() - two)
-                        * (gas_overdemand - three),
+                    (gas_overdemand.clone() - 1.expr())
+                        * (gas_overdemand.clone() - 2.expr())
+                        * (gas_overdemand - 3.expr()),
                 ],
                 lookups: vec![],
             }
@@ -285,12 +251,12 @@ impl<F: FieldExt> PushGadget<F> {
         self.success.word.assign(
             region,
             offset,
-            Some(execution_step.values[0]),
+            Some(execution_step.values[0].to_word()),
         )?;
         self.success
             .selectors
             .iter()
-            .zip(execution_step.values[1].iter())
+            .zip(execution_step.values[1].to_word().iter())
             .map(|(alloc, bit)| {
                 alloc.assign(region, offset, Some(F::from_u64(*bit as u64)))
             })
@@ -306,6 +272,7 @@ mod test {
     };
     use bus_mapping::{evm::OpcodeId, operation::Target};
     use halo2::{arithmetic::FieldExt, dev::MockProver};
+    use num::BigUint;
     use pasta_curves::pallas::Base;
 
     macro_rules! try_test_circuit {
@@ -327,14 +294,8 @@ mod test {
                 opcode: OpcodeId::PUSH2,
                 case: Case::Success,
                 values: vec![
-                    [
-                        2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    ],
-                    [
-                        1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    ]
+                    BigUint::from(0x02_03u64),
+                    BigUint::from(0x01_01u64),
                 ],
             }],
             vec![Operation {
@@ -344,7 +305,7 @@ mod test {
                 values: [
                     Base::zero(),
                     Base::from_u64(1023),
-                    Base::from_u64(2 + 2),
+                    Base::from_u64(2 + 3),
                     Base::zero(),
                 ]
             }],

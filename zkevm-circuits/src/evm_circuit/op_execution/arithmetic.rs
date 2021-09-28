@@ -3,12 +3,9 @@ use super::super::{
     Lookup, Word,
 };
 use super::{CaseAllocation, CaseConfig, OpExecutionState, OpGadget};
-use bus_mapping::evm::OpcodeId;
-use halo2::{
-    arithmetic::FieldExt,
-    circuit::Region,
-    plonk::{Error, Expression},
-};
+use crate::util::{Expr, ToWord};
+use bus_mapping::evm::{GasCost, OpcodeId};
+use halo2::{arithmetic::FieldExt, circuit::Region, plonk::Error};
 use std::{array, convert::TryInto};
 
 #[derive(Clone, Debug)]
@@ -85,36 +82,24 @@ impl<F: FieldExt> OpGadget<F> for AddGadget<F> {
         state_curr: &OpExecutionState<F>,
         state_next: &OpExecutionState<F>,
     ) -> Vec<Constraint<F>> {
-        let (add, sub) = (
-            Expression::Constant(F::from_u64(1)),
-            Expression::Constant(F::from_u64(3)),
-        );
-
         let OpExecutionState { opcode, .. } = &state_curr;
 
-        let common_polys =
-            vec![(opcode.expr() - add.clone()) * (opcode.expr() - sub.clone())];
+        let common_polys = vec![
+            (opcode.expr() - OpcodeId::ADD.expr())
+                * (opcode.expr() - OpcodeId::SUB.expr()),
+        ];
 
         let success = {
-            let (one, expr_256) = (
-                Expression::Constant(F::one()),
-                Expression::Constant(F::from_u64(1 << 8)),
-            );
-
             // interpreter state transition constraints
             let state_transition_constraints = vec![
                 state_next.global_counter.expr()
-                    - (state_curr.global_counter.expr()
-                        + Expression::Constant(F::from_u64(3))),
+                    - (state_curr.global_counter.expr() + 3.expr()),
                 state_next.program_counter.expr()
-                    - (state_curr.program_counter.expr()
-                        + Expression::Constant(F::from_u64(1))),
+                    - (state_curr.program_counter.expr() + 1.expr()),
                 state_next.stack_pointer.expr()
-                    - (state_curr.stack_pointer.expr()
-                        + Expression::Constant(F::from_u64(1))),
+                    - (state_curr.stack_pointer.expr() + 1.expr()),
                 state_next.gas_counter.expr()
-                    - (state_curr.gas_counter.expr()
-                        + Expression::Constant(F::from_u64(3))),
+                    - (state_curr.gas_counter.expr() + GasCost::FASTEST.expr()),
             ];
 
             let AddSuccessAllocation {
@@ -126,33 +111,36 @@ impl<F: FieldExt> OpGadget<F> for AddGadget<F> {
                 carry,
             } = &self.success;
 
-            // swap a and c if it's SUB
-            let no_swap = one - swap.expr();
+            // swap b and c if it's SUB
+            let no_swap = 1.expr() - swap.expr();
             let swap_constraints = vec![
                 swap.expr() * no_swap.clone(),
-                swap.expr() * (opcode.expr() - sub),
-                no_swap.clone() * (opcode.expr() - add),
+                swap.expr() * (opcode.expr() - OpcodeId::SUB.expr()),
+                no_swap.clone() * (opcode.expr() - OpcodeId::ADD.expr()),
             ];
 
             // add constraints
             let add_constraints = {
-                let mut constraints = Vec::with_capacity(32);
-                // 256 * carry_out + c
-                let lhs =
-                    carry[0].expr() * expr_256.clone() + c.cells[0].expr();
-                // a + b (first carry_in is always 0)
-                let rhs = a.cells[0].expr() + b.cells[0].expr();
-                // equality check
-                constraints.push(lhs - rhs);
+                let mut constraints = Vec::with_capacity(64);
 
-                for idx in 1..32 {
+                for idx in 0..32 {
                     // 256 * carry_out + c
-                    let lhs = carry[idx].expr() * expr_256.clone()
-                        + c.cells[idx].expr();
+                    let lhs =
+                        carry[idx].expr() * 256.expr() + c.cells[idx].expr();
                     // a + b + carry_in
                     let rhs = a.cells[idx].expr()
                         + b.cells[idx].expr()
-                        + carry[idx - 1].expr();
+                        + if idx == 0 {
+                            // first carry_in is always 0
+                            0.expr()
+                        } else {
+                            carry[idx - 1].expr()
+                        };
+
+                    // carry range check
+                    constraints.push(
+                        carry[idx].expr() * (1.expr() - carry[idx].expr()),
+                    );
                     // equality check
                     constraints.push(lhs - rhs)
                 }
@@ -193,38 +181,30 @@ impl<F: FieldExt> OpGadget<F> for AddGadget<F> {
         };
 
         let stack_underflow = {
-            let (zero, minus_one) = (
-                Expression::Constant(F::from_u64(1024)),
-                Expression::Constant(F::from_u64(1023)),
-            );
-            let stack_pointer = state_curr.stack_pointer.expr();
+            let OpExecutionState { stack_pointer, .. } = &state_curr;
             Constraint {
                 name: "AddGadget stack underflow",
                 selector: self.stack_underflow.expr(),
                 polys: vec![
-                    (stack_pointer.clone() - zero)
-                        * (stack_pointer - minus_one),
+                    (stack_pointer.expr() - 1024.expr())
+                        * (stack_pointer.expr() - 1023.expr()),
                 ],
                 lookups: vec![],
             }
         };
 
         let out_of_gas = {
-            let (one, two, three) = (
-                Expression::Constant(F::from_u64(1)),
-                Expression::Constant(F::from_u64(2)),
-                Expression::Constant(F::from_u64(3)),
-            );
             let (selector, gas_available) = &self.out_of_gas;
-            let gas_overdemand = state_curr.gas_counter.expr() + three.clone()
+            let gas_overdemand = state_curr.gas_counter.expr()
+                + GasCost::FASTEST.expr()
                 - gas_available.expr();
             Constraint {
                 name: "AddGadget out of gas",
                 selector: selector.expr(),
                 polys: vec![
-                    (gas_overdemand.clone() - one)
-                        * (gas_overdemand.clone() - two)
-                        * (gas_overdemand - three),
+                    (gas_overdemand.clone() - 1.expr())
+                        * (gas_overdemand.clone() - 2.expr())
+                        * (gas_overdemand - 3.expr()),
                 ],
                 lookups: vec![],
             }
@@ -284,22 +264,22 @@ impl<F: FieldExt> AddGadget<F> {
         self.success.a.assign(
             region,
             offset,
-            Some(execution_step.values[0]),
+            Some(execution_step.values[0].to_word()),
         )?;
         self.success.b.assign(
             region,
             offset,
-            Some(execution_step.values[1]),
+            Some(execution_step.values[1].to_word()),
         )?;
         self.success.c.assign(
             region,
             offset,
-            Some(execution_step.values[2]),
+            Some(execution_step.values[2].to_word()),
         )?;
         self.success
             .carry
             .iter()
-            .zip(execution_step.values[3].iter())
+            .zip(execution_step.values[3].to_word().iter())
             .map(|(alloc, carry)| {
                 alloc.assign(region, offset, Some(F::from_u64(*carry as u64)))
             })
@@ -315,6 +295,7 @@ mod test {
     };
     use bus_mapping::{evm::OpcodeId, operation::Target};
     use halo2::{arithmetic::FieldExt, dev::MockProver};
+    use num::BigUint;
     use pasta_curves::pallas::Base;
 
     macro_rules! try_test_circuit {
@@ -338,58 +319,26 @@ mod test {
                     opcode: OpcodeId::PUSH3,
                     case: Case::Success,
                     values: vec![
-                        [
-                            1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ]
+                        BigUint::from(0x03_02_01u64),
+                        BigUint::from(0x01_01_01u64)
                     ],
                 },
                 ExecutionStep {
                     opcode: OpcodeId::PUSH3,
                     case: Case::Success,
                     values: vec![
-                        [
-                            4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ]
+                        BigUint::from(0x06_05_04u64),
+                        BigUint::from(0x01_01_01u64)
                     ],
                 },
                 ExecutionStep {
                     opcode: OpcodeId::ADD,
                     case: Case::Success,
                     values: vec![
-                        [
-                            4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            5, 7, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ]
+                        BigUint::from(0x06_05_04u64),
+                        BigUint::from(0x03_02_01u64),
+                        BigUint::from(0x09_07_05u64),
+                        BigUint::from(0u64) // carry
                     ],
                 }
             ],
@@ -459,58 +408,26 @@ mod test {
                     opcode: OpcodeId::PUSH3,
                     case: Case::Success,
                     values: vec![
-                        [
-                            5, 7, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ]
+                        BigUint::from(0x09_07_05u64),
+                        BigUint::from(0x01_01_01u64)
                     ],
                 },
                 ExecutionStep {
                     opcode: OpcodeId::PUSH3,
                     case: Case::Success,
                     values: vec![
-                        [
-                            4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ]
+                        BigUint::from(0x06_05_04u64),
+                        BigUint::from(0x01_01_01u64)
                     ],
                 },
                 ExecutionStep {
                     opcode: OpcodeId::SUB,
                     case: Case::Success,
                     values: vec![
-                        [
-                            4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            5, 7, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ]
+                        BigUint::from(0x06_05_04u64),
+                        BigUint::from(0x03_02_01u64),
+                        BigUint::from(0x09_07_05u64),
+                        BigUint::from(0u64) // carry
                     ],
                 }
             ],

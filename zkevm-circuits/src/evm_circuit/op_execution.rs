@@ -1,10 +1,11 @@
 use super::{
     param::{
-        CIRCUIT_HEIGHT, CIRCUIT_WIDTH, NUM_CELL_OP_EXECTION_STATE,
+        CIRCUIT_HEIGHT, CIRCUIT_WIDTH, NUM_CELL_OP_EXECUTION_STATE,
         NUM_CELL_OP_GADGET_SELECTOR, NUM_CELL_RESUMPTION,
     },
     Case, Cell, Constraint, CoreStateInstance, ExecutionStep, Lookup, Word,
 };
+use crate::util::Expr;
 use bus_mapping::evm::OpcodeId;
 use halo2::{
     arithmetic::FieldExt,
@@ -13,28 +14,30 @@ use halo2::{
 };
 use std::{collections::HashMap, ops::Range};
 
+mod constraint_builder;
+mod math_gadgets;
 mod arithmetic;
+mod comparator;
 mod push;
 mod byte;
 
 use arithmetic::AddGadget;
+use comparator::LtGadget;
 use push::PushGadget;
 use byte::ByteGadget;
 
 fn bool_switches_constraints<F: FieldExt>(
     bool_switches: &[Cell<F>],
 ) -> Vec<Expression<F>> {
-    let one = Expression::Constant(F::one());
-
     let mut constraints = Vec::with_capacity(bool_switches.len() + 1);
-    let mut sum_to_one = Expression::Constant(F::zero());
+    let mut sum_to_one = 0.expr();
 
     for switch in bool_switches {
-        constraints.push(switch.expr() * (one.clone() - switch.expr()));
+        constraints.push(switch.expr() * (1.expr() - switch.expr()));
         sum_to_one = sum_to_one + switch.expr();
     }
 
-    constraints.push(one - sum_to_one);
+    constraints.push(1.expr() - sum_to_one);
 
     constraints
 }
@@ -58,9 +61,9 @@ impl CaseConfig {
             }
     }
 
-    // allocate indexes of cells for words, cells and unused. It assumes input
+    // allocate indices of cells for words, cells and unused. It assumes input
     // free_cells are in order of rotation and then column index.
-    fn allocation_idxs<F: FieldExt>(
+    fn allocate_indices<F: FieldExt>(
         &self,
         num_case: usize,
         free_cells: &[Cell<F>],
@@ -154,7 +157,7 @@ pub(crate) struct OpExecutionState<F> {
 
 impl<F: FieldExt> OpExecutionState<F> {
     pub(crate) fn new(cells: &[Cell<F>]) -> Self {
-        assert_eq!(cells.len(), NUM_CELL_OP_EXECTION_STATE);
+        assert_eq!(cells.len(), NUM_CELL_OP_EXECUTION_STATE);
 
         Self {
             is_executing: cells[0].clone(),
@@ -210,6 +213,7 @@ pub(crate) struct OpExecutionGadget<F> {
     preset_map: HashMap<(usize, Case), Preset<F>>,
     add_gadget: AddGadget<F>,
     push_gadget: PushGadget<F>,
+    lt_gadget: LtGadget<F>,
     byte_gadget: ByteGadget<F>,
 }
 
@@ -238,7 +242,7 @@ impl<F: FieldExt> OpExecutionGadget<F> {
 
         let mut constraints = vec![Constraint {
             name: "op selectors",
-            selector: Expression::Constant(F::one()),
+            selector: 1.expr(),
             polys: bool_switches_constraints(qs_ops),
             lookups: vec![],
         }];
@@ -251,6 +255,7 @@ impl<F: FieldExt> OpExecutionGadget<F> {
                     r,
                     &state_curr,
                     &state_next,
+                    &qs_byte_lookups[..],
                     qs_ops,
                     qs_op_idx,
                     free_cells,
@@ -265,6 +270,7 @@ impl<F: FieldExt> OpExecutionGadget<F> {
 
         construct_op_gadget!(add_gadget);
         construct_op_gadget!(push_gadget);
+        construct_op_gadget!(lt_gadget);
         construct_op_gadget!(byte_gadget);
         let _ = qs_op_idx;
 
@@ -280,7 +286,7 @@ impl<F: FieldExt> OpExecutionGadget<F> {
 
             meta.create_gate(name, |_| {
                 if polys.is_empty() {
-                    return vec![Expression::Constant(F::zero())];
+                    return vec![0.expr()];
                 }
                 polys
                     .into_iter()
@@ -303,6 +309,7 @@ impl<F: FieldExt> OpExecutionGadget<F> {
             resumption,
             add_gadget,
             push_gadget,
+            lt_gadget,
             byte_gadget,
         }
     }
@@ -312,6 +319,7 @@ impl<F: FieldExt> OpExecutionGadget<F> {
         r: F,
         state_curr: &OpExecutionState<F>,
         state_next: &OpExecutionState<F>,
+        qs_byte_lookups: &[Cell<F>],
         qs_ops: &[Cell<F>],
         qs_op_idx: usize,
         free_cells: &[Cell<F>],
@@ -357,7 +365,7 @@ impl<F: FieldExt> OpExecutionGadget<F> {
                 }
 
                 let (word_ranges, cell_idxs, unused_idxs) =
-                    case_config.allocation_idxs(num_case, free_cells);
+                    case_config.allocate_indices(num_case, free_cells);
 
                 let words = word_ranges
                     .into_iter()
@@ -385,14 +393,26 @@ impl<F: FieldExt> OpExecutionGadget<F> {
                     preset.free_cells.push((*idx, F::zero()));
                 }
 
-                assert!(
-                    preset_map
-                        .insert((qs_op_idx, case_config.case), preset)
-                        .is_none(),
-                    "duplicated case configured"
-                );
-
                 let qs_case = &qs_cases[q_case_idx];
+                constraints.push(Constraint {
+                    name: "case qs_byte_lookups",
+                    selector: qs_op.expr() * qs_case.expr(),
+                    polys: preset
+                        .qs_byte_lookups
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, value)| {
+                            if value.is_zero() {
+                                // constraint qs_byte_lookup to 0 by default
+                                qs_byte_lookups[idx].expr()
+                            } else {
+                                // constraint qs_byte_lookup to 1 to enable byte lookup
+                                1.expr() - qs_byte_lookups[idx].expr()
+                            }
+                        })
+                        .collect(),
+                    lookups: vec![],
+                });
                 constraints.push(Constraint {
                     name: "case unused",
                     selector: qs_op.expr() * qs_case.expr(),
@@ -402,6 +422,13 @@ impl<F: FieldExt> OpExecutionGadget<F> {
                         .collect(),
                     lookups: vec![],
                 });
+
+                assert!(
+                    preset_map
+                        .insert((qs_op_idx, case_config.case), preset)
+                        .is_none(),
+                    "duplicated case configured"
+                );
 
                 CaseAllocation {
                     selector: qs_case.clone(),
@@ -507,21 +534,27 @@ impl<F: FieldExt> OpExecutionGadget<F> {
                 self.free_cells[*idx].assign(region, offset, Some(*value))?;
             }
 
-            match execution_step.opcode {
-                OpcodeId::ADD | OpcodeId::SUB => self.add_gadget.assign(
-                    region,
-                    offset,
-                    core_state,
-                    execution_step,
-                )?,
+            match (execution_step.opcode.is_push(), execution_step.opcode) {
                 // PUSH1, ..., PUSH32
-                OpcodeId(0x60..=0x7f) => self.push_gadget.assign(
+                (true, _) => self.push_gadget.assign(
                     region,
                     offset,
                     core_state,
                     execution_step,
                 )?,
-                OpcodeId::BYTE => self.byte_gadget.assign(
+                (_, OpcodeId::ADD | OpcodeId::SUB) => self.add_gadget.assign(
+                    region,
+                    offset,
+                    core_state,
+                    execution_step,
+                )?,
+                (_, OpcodeId::LT | OpcodeId::GT) => self.lt_gadget.assign(
+                    region,
+                    offset,
+                    core_state,
+                    execution_step,
+                )?,
+                (_, OpcodeId::BYTE) => self.byte_gadget.assign(
                     region,
                     offset,
                     core_state,

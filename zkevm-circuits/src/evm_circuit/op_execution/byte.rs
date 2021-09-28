@@ -1,20 +1,23 @@
-use super::super::{
-    BusMappingLookup, Case, Cell, Constraint, ExecutionStep, Lookup, Word,
-};
+use super::super::{Case, Cell, Constraint, ExecutionStep, Word};
+use super::constraint_builder::{ConstraintBuilder, StateTransitions};
 use super::{
     CaseAllocation, CaseConfig, CoreStateInstance, OpExecutionState, OpGadget,
 };
-use bus_mapping::evm::OpcodeId;
+use crate::util::{Expr, ToWord};
+use bus_mapping::evm::{GasCost, OpcodeId};
 use halo2::plonk::Error;
 use halo2::{arithmetic::FieldExt, circuit::Region, plonk::Expression};
-use std::convert::TryInto;
+use std::{array, convert::TryInto};
 
+use array_init::array_init;
+
+use super::math_gadgets::IsZeroGadget;
+
+pub const OPCODE: OpcodeId = OpcodeId::BYTE;
 pub const GC_DELTA: u64 = 3;
 pub const PC_DELTA: u64 = 1;
 pub const SP_DELTA: u64 = 1;
 pub const GAS: u64 = 3;
-
-pub const OPCODE: OpcodeId = OpcodeId::BYTE;
 
 #[derive(Clone, Debug)]
 struct ByteSuccessAllocation<F> {
@@ -22,8 +25,8 @@ struct ByteSuccessAllocation<F> {
     word_idx: Word<F>,
     value: Word<F>,
     result: Word<F>,
-    sum_inv: Cell<F>,
-    diff_inv: [Cell<F>; 32],
+    is_msb_sum_zero: IsZeroGadget<F>,
+    is_byte_selected: [IsZeroGadget<F>; 32],
 }
 
 #[derive(Clone, Debug)]
@@ -43,7 +46,7 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
         CaseConfig {
             case: Case::Success,
             num_word: 3,  // value + idx + result
-            num_cell: 33, // sum_inv + 32 diff_inv
+            num_cell: IsZeroGadget::<F>::NUM_CELLS * 33, // sum_inv + 32 diff_inv
             will_halt: false,
         },
         CaseConfig {
@@ -69,8 +72,8 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
                 word_idx: success.words.pop().unwrap(),
                 value: success.words.pop().unwrap(),
                 result: success.words.pop().unwrap(),
-                sum_inv: success.cells.pop().unwrap(),
-                diff_inv: success.cells.try_into().unwrap(),
+                is_msb_sum_zero: IsZeroGadget::construct(&mut success),
+                is_byte_selected: array_init(|_| IsZeroGadget::construct(&mut success)),
             },
             stack_underflow: stack_underflow.selector.clone(),
             out_of_gas: (
@@ -91,7 +94,6 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
 
         let success = {
             // interpreter state transition constraints
-            let one = Expression::Constant(F::from_u64(1));
             let state_transition_constraints = vec![
                 state_next.global_counter.expr()
                     - (state_curr.global_counter.expr()
@@ -112,26 +114,18 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
                 value,
                 word_idx,
                 result,
-                sum_inv,
-                diff_inv,
+                is_msb_sum_zero,
+                is_byte_selected,
             } = &self.success;
+
+            let mut cb = ConstraintBuilder::default();
 
             // If any of the non-LSB bytes are non-zero of the index word we never need to copy any bytes.
             // So just sum all the non-LSB byte values here and then check if it's non-zero
             // so we can use that as an additional condition when to copy the byte value.
-            let mut index_byte_sum = Expression::Constant(F::from_u64(0));
-            for idx in 1..32 {
-                index_byte_sum =
-                    index_byte_sum + word_idx.cells[idx as usize].expr()
-            }
-            let is_sum_zero_expression =
-                one.clone() - index_byte_sum.clone() * sum_inv.expr();
-            let mut byte_constraints = vec![];
-            let mut is_zero_constraints = vec![
-                index_byte_sum.clone() * is_sum_zero_expression.clone(),
-                sum_inv.expr().clone() * is_sum_zero_expression.clone(),
-            ];
-            byte_constraints.append(&mut is_zero_constraints);
+            let is_msb_sum_zero_expr = is_msb_sum_zero.constraints(&mut cb,
+                 ConstraintBuilder::sum(word_idx.cells[1..32].to_vec())
+            );
 
             // Now we just need to check that `result` is the sum of all copied bytes.
             // We go byte by byte and check if `idx - stack.idx` is zero.
@@ -140,61 +134,28 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
             // At the end this sum needs to equal result.
             let mut result_sum_expr = result.cells[0].expr();
             for idx in 0..32 {
-                // Check if this byte was selected looking only at the LSB of the index word
-                let diff = word_idx.cells[0].expr()
-                    - Expression::Constant(F::from_u64(31 - idx));
-                let is_zero_expression =
-                    one.clone() - diff.clone() * diff_inv[idx as usize].expr();
-                let mut is_zero_constraints = vec![
-                    diff * is_zero_expression.clone(),
-                    diff_inv[idx as usize].expr().clone()
-                        * is_zero_expression.clone(),
-                ];
-                byte_constraints.append(&mut is_zero_constraints);
+                // Check if this byte is selected looking only at the LSB of the index word
+                let diff = word_idx.cells[0].expr() - (31 - idx).expr();
+                let byte_selected = is_byte_selected[idx as usize].constraints(&mut cb, diff);
 
-                // Add the byte to the sum when this byte was selected
+                // Add the byte to the sum when this byte is selected
                 result_sum_expr = result_sum_expr
-                    - is_zero_expression
-                        * is_sum_zero_expression.clone()
-                        * value.cells[idx as usize].expr();
+                    - (byte_selected
+                        * is_msb_sum_zero_expr.clone()
+                        * value.cells[idx as usize].expr());
             }
-            byte_constraints.push(result_sum_expr);
+            cb.add_expression(result_sum_expr);
 
             // All bytes of result, except for the LSB, always need to be 0.
             for idx in 1..32 {
-                byte_constraints.push(result.cells[idx as usize].expr());
+                cb.require_zero(result.cells[idx as usize].expr());
             }
 
-            #[allow(clippy::suspicious_operation_groupings)]
-            let bus_mapping_lookups = vec![
-                Lookup::BusMappingLookup(BusMappingLookup::Stack {
-                    index_offset: 0,
-                    value: word_idx.expr(),
-                    is_write: false,
-                }),
-                Lookup::BusMappingLookup(BusMappingLookup::Stack {
-                    index_offset: 1,
-                    value: value.expr(),
-                    is_write: false,
-                }),
-                Lookup::BusMappingLookup(BusMappingLookup::Stack {
-                    index_offset: 1,
-                    value: result.expr(),
-                    is_write: true,
-                }),
-            ];
+            cb.stack_pop(word_idx.expr());
+            cb.stack_pop(value.expr());
+            cb.stack_push(result.expr());
 
-            Constraint {
-                name: "ByteGadget success",
-                selector: case_selector.expr(),
-                polys: [
-                    common_polys.clone(),
-                    state_transition_constraints,
-                    byte_constraints,
-                ]
-                .concat(),
-                lookups: bus_mapping_lookups,
-            }
+            cb.constraint(case_selector.expr(), "ByteGadget success")
         };
 
         let stack_underflow = {
@@ -207,7 +168,6 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
                 name: "Byte stack underflow",
                 selector: self.stack_underflow.expr(),
                 polys: vec![
-                    common_polys.clone(),
                     vec![
                         (stack_pointer.clone() - zero)
                             * (stack_pointer - minus_one),
@@ -231,7 +191,6 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
                 name: "BYTE out of gas",
                 selector: case_selector.expr(),
                 polys: [
-                    common_polys,
                     vec![
                         (gas_overdemand.clone() - one)
                             * (gas_overdemand.clone() - two)
@@ -243,7 +202,14 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
             }
         };
 
-        vec![success, stack_underflow, out_of_gas]
+        // Add common expressions to all cases
+        array::IntoIter::new([success, stack_underflow, out_of_gas])
+            .map(move |mut constraint| {
+                constraint.polys =
+                    [common_polys.clone(), constraint.polys].concat();
+                constraint
+            })
+            .collect()
     }
 
     fn assign(
@@ -287,33 +253,35 @@ impl<F: FieldExt> ByteGadget<F> {
         self.success.word_idx.assign(
             region,
             offset,
-            Some(execution_step.values[0]),
+            Some(execution_step.values[0].to_word()),
         )?;
         self.success.value.assign(
             region,
             offset,
-            Some(execution_step.values[1]),
+            Some(execution_step.values[1].to_word()),
         )?;
         self.success.result.assign(
             region,
             offset,
-            Some(execution_step.values[2]),
+            Some(execution_step.values[2].to_word()),
         )?;
 
-        for (i, alloc) in self.success.diff_inv.iter().enumerate() {
-            let diff_inv = (F::from_u64(execution_step.values[0][0] as u64)
-                - F::from_u64((31 - i) as u64))
-            .invert()
-            .unwrap_or(F::zero());
-            alloc.assign(region, offset, Some(diff_inv))?;
-        }
+        self.success.is_msb_sum_zero.assign(
+            region,
+            offset,
+            ConstraintBuilder::<F>::from_bytes_witness(
+                execution_step.values[0].to_word()[1..32].to_vec(),
+            ),
+        )?;
 
-        let mut byte_sum = F::from_u64(0);
-        for idx in 1..32 {
-            byte_sum += F::from_u64(execution_step.values[0][idx] as u64);
+        for i in 0..32 {
+            let diff = F::from_u64(execution_step.values[0].to_word()[0] as u64) - F::from_u64((31 - i) as u64);
+            self.success.is_byte_selected[i].assign(
+                region,
+                offset,
+                diff,
+            )?;
         }
-        let sum_inv = byte_sum.invert().unwrap_or(F::zero());
-        self.success.sum_inv.assign(region, offset, Some(sum_inv))?;
 
         self.success
             .case_selector
@@ -350,53 +318,25 @@ mod test {
                     opcode: OpcodeId::PUSH3,
                     case: Case::Success,
                     values: vec![
-                        [
-                            1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ]
+                        0x030201u64.into(),
+                        0x010101u64.into(),
                     ],
                 },
                 ExecutionStep {
                     opcode: OpcodeId::PUSH1,
                     case: Case::Success,
                     values: vec![
-                        [
-                            29, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ]
+                        29u64.into(),
+                        0x01u64.into(),
                     ],
                 },
                 ExecutionStep {
                     opcode: OpcodeId::BYTE,
                     case: Case::Success,
                     values: vec![
-                        [
-                            29, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ]
+                        29u64.into(),
+                        0x030201u64.into(),
+                        0x03u64.into(),
                     ],
                 }
             ],
@@ -459,60 +399,32 @@ mod test {
             ],
             Ok(())
         );
-        // Select byte 256 + 29
+        // Select byte 256
         try_test_circuit!(
             vec![
                 ExecutionStep {
                     opcode: OpcodeId::PUSH3,
                     case: Case::Success,
                     values: vec![
-                        [
-                            1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ]
+                        0x030201u64.into(),
+                        0x010101u64.into(),
                     ],
                 },
                 ExecutionStep {
                     opcode: OpcodeId::PUSH2,
                     case: Case::Success,
                     values: vec![
-                        [
-                            29, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ]
+                        0x0100u64.into(),
+                        0x0101u64.into(),
                     ],
                 },
                 ExecutionStep {
                     opcode: OpcodeId::BYTE,
                     case: Case::Success,
                     values: vec![
-                        [
-                            29, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ],
-                        [
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                            0, //
-                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        ]
+                        0x0100u64.into(),
+                        0x030201u64.into(),
+                        0u64.into(),
                     ],
                 }
             ],
@@ -535,7 +447,7 @@ mod test {
                     values: [
                         Base::zero(),
                         Base::from_u64(1022),
-                        Base::from_u64(1 + 29),
+                        Base::from_u64(1),
                         Base::zero(),
                     ]
                 },
@@ -546,7 +458,7 @@ mod test {
                     values: [
                         Base::zero(),
                         Base::from_u64(1022),
-                        Base::from_u64(1 + 29),
+                        Base::from_u64(1),
                         Base::zero(),
                     ]
                 },
