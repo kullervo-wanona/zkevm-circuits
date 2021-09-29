@@ -14,17 +14,18 @@ use halo2::{
 };
 use std::{collections::HashMap, ops::Range};
 
+mod arithmetic;
+mod byte;
+mod common_cases;
+mod comparator;
 mod constraint_builder;
 mod math_gadgets;
-mod arithmetic;
-mod comparator;
 mod push;
-mod byte;
 
 use arithmetic::AddGadget;
+use byte::ByteGadget;
 use comparator::LtGadget;
 use push::PushGadget;
-use byte::ByteGadget;
 
 fn bool_switches_constraints<F: FieldExt>(
     bool_switches: &[Cell<F>],

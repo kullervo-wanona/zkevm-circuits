@@ -1,20 +1,6 @@
 use super::super::{BusMappingLookup, Cell, Constraint, FixedLookup, Lookup};
-use super::OpExecutionState;
 use crate::util::Expr;
 use halo2::{arithmetic::FieldExt, plonk::Expression};
-
-pub const STACK_START_IDX: usize = 1024;
-
-// Allows updating the state transition without having to update all
-// op codes that don't modify any of the new state variables.
-#[derive(Clone, Debug, Default)]
-pub struct StateTransitions<F> {
-    pub gc_delta: Option<Expression<F>>,
-    pub sp_delta: Option<Expression<F>>,
-    pub pc_delta: Option<Expression<F>>,
-    pub gas_delta: Option<Expression<F>>,
-    pub next_memory_size: Option<Expression<F>>,
-}
 
 #[derive(Clone, Debug)]
 pub struct ConstraintBuilder<F> {
@@ -35,24 +21,24 @@ impl<F: FieldExt> ConstraintBuilder<F> {
     }
 
     pub(super) fn default() -> Self {
-        Self::with_call_id(Expression::Constant(F::from_u64(0)))
+        Self::with_call_id(0.expr())
     }
 
     // Common
 
-    pub(super) fn boolean_constrain(&mut self, value: Expression<F>) {
+    pub(super) fn require_boolean(&mut self, value: Expression<F>) {
         self.add_expression(value.clone() * (1.expr() - value));
-    }
-
-    pub(super) fn boolean_constrain_cell(&mut self, cell: &Cell<F>) {
-        self.boolean_constrain(cell.expr());
     }
 
     pub(super) fn require_zero(&mut self, expression: Expression<F>) {
         self.add_expression(expression);
     }
 
-    pub(super) fn range_check(&mut self, value: Expression<F>, range: u64) {
+    pub(super) fn require_in_range(
+        &mut self,
+        value: Expression<F>,
+        range: u64,
+    ) {
         let table = match range {
             32 => FixedLookup::Range32,
             256 => FixedLookup::Range256,
@@ -63,8 +49,6 @@ impl<F: FieldExt> ConstraintBuilder<F> {
             [value, 0.expr(), 0.expr()],
         ));
     }
-
-    // Sets
 
     pub(super) fn require_in_set(
         &mut self,
@@ -135,40 +119,6 @@ impl<F: FieldExt> ConstraintBuilder<F> {
         }
     }
 
-    // State transitions
-
-    pub(super) fn do_state_transitions(
-        &mut self,
-        state_curr: &OpExecutionState<F>,
-        state_next: &OpExecutionState<F>,
-        state_transitions: StateTransitions<F>,
-    ) {
-        // GC
-        self.add_expression(
-            state_next.global_counter.expr()
-                - (state_curr.global_counter.expr()
-                    + state_transitions.gc_delta.unwrap_or(0.expr())),
-        );
-        // SP
-        self.add_expression(
-            state_next.stack_pointer.expr()
-                - (state_curr.stack_pointer.expr()
-                    + state_transitions.sp_delta.unwrap_or(0.expr())),
-        );
-        // PC
-        self.add_expression(
-            state_next.program_counter.expr()
-                - (state_curr.program_counter.expr()
-                    + state_transitions.pc_delta.unwrap_or(0.expr())),
-        );
-        // gas counter
-        self.add_expression(
-            state_next.gas_counter.expr()
-                - (state_curr.gas_counter.expr()
-                    + state_transitions.gas_delta.unwrap_or(0.expr())),
-        );
-    }
-
     // General
 
     pub(super) fn add_expression(&mut self, expression: Expression<F>) {
@@ -183,7 +133,7 @@ impl<F: FieldExt> ConstraintBuilder<F> {
         self.lookups.push(lookup);
     }
 
-    // Constraints
+    // Constraint
 
     pub(super) fn constraint(
         &self,
@@ -197,33 +147,23 @@ impl<F: FieldExt> ConstraintBuilder<F> {
             lookups: self.lookups.clone(),
         }
     }
-
-    pub(super) fn stack_underflow_constraint(
-        selector: Expression<F>,
-        stack_pointer: Expression<F>,
-        num_popped: usize,
-        name: &'static str,
-    ) -> Constraint<F> {
-        let mut cb = ConstraintBuilder::default();
-        let mut set = vec![];
-        for idx in 0..num_popped {
-            set.push(Expression::Constant(F::from_u64(
-                (STACK_START_IDX - idx) as u64,
-            )));
-        }
-        cb.require_in_set(stack_pointer, set);
-        cb.constraint(selector, name)
-    }
 }
 
-/// Utils
+/// Static utils
 impl<F: FieldExt> ConstraintBuilder<F> {
-    pub(super) fn select(
-        condition: Expression<F>,
-        when_true: Expression<F>,
-        when_false: Expression<F>,
-    ) -> Expression<F> {
-        condition.clone() * when_true + (1.expr() - condition) * when_false
+    pub(super) fn batch_add_expressions(
+        constraints: Vec<Constraint<F>>,
+        expressions: Vec<Expression<F>>,
+    ) -> Vec<Constraint<F>> {
+        constraints
+            .into_iter()
+            .map(|mut constraint| {
+                constraint.polys =
+                    [constraint.polys.clone(), expressions.clone().to_vec()]
+                        .concat();
+                constraint
+            })
+            .collect()
     }
 
     pub(super) fn from_bytes(bytes: Vec<Cell<F>>) -> Expression<F> {
@@ -252,9 +192,5 @@ impl<F: FieldExt> ConstraintBuilder<F> {
             value = value + cell.expr();
         }
         value
-    }
-
-    pub(super) fn get_range(num_bits: usize) -> F {
-        F::from_u64(2).pow(&[num_bits as u64, 0, 0, 0])
     }
 }

@@ -1,23 +1,23 @@
 use super::super::{Case, Cell, Constraint, ExecutionStep, Word};
-use super::constraint_builder::{ConstraintBuilder, StateTransitions};
+use super::constraint_builder::ConstraintBuilder;
 use super::{
     CaseAllocation, CaseConfig, CoreStateInstance, OpExecutionState, OpGadget,
 };
 use crate::util::{Expr, ToWord};
+use array_init::array_init;
 use bus_mapping::evm::{GasCost, OpcodeId};
 use halo2::plonk::Error;
-use halo2::{arithmetic::FieldExt, circuit::Region, plonk::Expression};
-use std::{array, convert::TryInto};
+use halo2::{arithmetic::FieldExt, circuit::Region};
+use std::convert::TryInto;
 
-use array_init::array_init;
+use super::common_cases::{OutOfGasCase, StackUnderflowCase, StateTransitions};
+use super::math_gadgets::{IsEqualGadget, IsZeroGadget};
 
-use super::math_gadgets::IsZeroGadget;
-
-pub const OPCODE: OpcodeId = OpcodeId::BYTE;
-pub const GC_DELTA: u64 = 3;
-pub const PC_DELTA: u64 = 1;
-pub const SP_DELTA: u64 = 1;
-pub const GAS: u64 = 3;
+const OPCODE: OpcodeId = OpcodeId::BYTE;
+const GC_DELTA: usize = 3;
+const PC_DELTA: usize = 1;
+const SP_DELTA: usize = 1;
+const GAS: GasCost = GasCost::FASTEST;
 
 #[derive(Clone, Debug)]
 struct ByteSuccessAllocation<F> {
@@ -26,17 +26,14 @@ struct ByteSuccessAllocation<F> {
     value: Word<F>,
     result: Word<F>,
     is_msb_sum_zero: IsZeroGadget<F>,
-    is_byte_selected: [IsZeroGadget<F>; 32],
+    is_byte_selected: [IsEqualGadget<F>; 32],
 }
 
 #[derive(Clone, Debug)]
 pub struct ByteGadget<F> {
     success: ByteSuccessAllocation<F>,
-    stack_underflow: Cell<F>, // case selector
-    out_of_gas: (
-        Cell<F>, // case selector
-        Cell<F>, // gas available
-    ),
+    stack_underflow: StackUnderflowCase<F>,
+    out_of_gas: OutOfGasCase<F>,
 }
 
 impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
@@ -45,22 +42,12 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
     const CASE_CONFIGS: &'static [CaseConfig] = &[
         CaseConfig {
             case: Case::Success,
-            num_word: 3,  // value + idx + result
-            num_cell: IsZeroGadget::<F>::NUM_CELLS * 33, // sum_inv + 32 diff_inv
+            num_word: 3, // value + word_idx + result
+            num_cell: IsZeroGadget::<F>::NUM_CELLS * 33, // 1x is_msb_sum_zero + 32x is_byte_selected
             will_halt: false,
         },
-        CaseConfig {
-            case: Case::StackUnderflow,
-            num_word: 0,
-            num_cell: 0,
-            will_halt: true,
-        },
-        CaseConfig {
-            case: Case::OutOfGas,
-            num_word: 0,
-            num_cell: 0,
-            will_halt: true,
-        },
+        StackUnderflowCase::<F>::CASE_CONFIG,
+        OutOfGasCase::<F>::CASE_CONFIG,
     ];
 
     fn construct(case_allocations: Vec<CaseAllocation<F>>) -> Self {
@@ -73,13 +60,12 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
                 value: success.words.pop().unwrap(),
                 result: success.words.pop().unwrap(),
                 is_msb_sum_zero: IsZeroGadget::construct(&mut success),
-                is_byte_selected: array_init(|_| IsZeroGadget::construct(&mut success)),
+                is_byte_selected: array_init(|_| {
+                    IsEqualGadget::construct(&mut success)
+                }),
             },
-            stack_underflow: stack_underflow.selector.clone(),
-            out_of_gas: (
-                out_of_gas.selector.clone(),
-                out_of_gas.resumption.unwrap().gas_available.clone(),
-            ),
+            stack_underflow: StackUnderflowCase::construct(&stack_underflow),
+            out_of_gas: OutOfGasCase::construct(&out_of_gas),
         }
     }
 
@@ -88,27 +74,10 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
         state_curr: &OpExecutionState<F>,
         state_next: &OpExecutionState<F>,
     ) -> Vec<Constraint<F>> {
-        let byte = Expression::Constant(F::from_u64(OPCODE.as_u8().into()));
         let OpExecutionState { opcode, .. } = &state_curr;
-        let common_polys = vec![(opcode.expr() - byte.clone())];
 
+        // Success
         let success = {
-            // interpreter state transition constraints
-            let state_transition_constraints = vec![
-                state_next.global_counter.expr()
-                    - (state_curr.global_counter.expr()
-                        + Expression::Constant(F::from_u64(GC_DELTA))),
-                state_next.stack_pointer.expr()
-                    - (state_curr.stack_pointer.expr()
-                        + Expression::Constant(F::from_u64(SP_DELTA))),
-                state_next.program_counter.expr()
-                    - (state_curr.program_counter.expr()
-                        + Expression::Constant(F::from_u64(PC_DELTA))),
-                state_next.gas_counter.expr()
-                    - (state_curr.gas_counter.expr()
-                        + Expression::Constant(F::from_u64(GAS))),
-            ];
-
             let ByteSuccessAllocation {
                 case_selector,
                 value,
@@ -123,20 +92,24 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
             // If any of the non-LSB bytes are non-zero of the index word we never need to copy any bytes.
             // So just sum all the non-LSB byte values here and then check if it's non-zero
             // so we can use that as an additional condition when to copy the byte value.
-            let is_msb_sum_zero_expr = is_msb_sum_zero.constraints(&mut cb,
-                 ConstraintBuilder::sum(word_idx.cells[1..32].to_vec())
+            let is_msb_sum_zero_expr = is_msb_sum_zero.constraints(
+                &mut cb,
+                ConstraintBuilder::sum(word_idx.cells[1..32].to_vec()),
             );
 
-            // Now we just need to check that `result` is the sum of all copied bytes.
-            // We go byte by byte and check if `idx - stack.idx` is zero.
-            // If it's zero (at most once) we add the byte value to the sum, else we add 0.
+            // Now we just need to check that `result[0]` is the sum of all copied bytes.
+            // We go byte by byte and check if `idx == word_idx`.
+            // If they are equal (at most once) we add the byte value to the sum, else we add 0.
             // The additional condition for this is that none of the non-LSB bytes are non-zero, see above.
             // At the end this sum needs to equal result.
             let mut result_sum_expr = result.cells[0].expr();
             for idx in 0..32 {
                 // Check if this byte is selected looking only at the LSB of the index word
-                let diff = word_idx.cells[0].expr() - (31 - idx).expr();
-                let byte_selected = is_byte_selected[idx as usize].constraints(&mut cb, diff);
+                let byte_selected = is_byte_selected[idx as usize].constraints(
+                    &mut cb,
+                    word_idx.cells[0].expr(),
+                    (31 - idx).expr(),
+                );
 
                 // Add the byte to the sum when this byte is selected
                 result_sum_expr = result_sum_expr
@@ -151,65 +124,41 @@ impl<F: FieldExt> OpGadget<F> for ByteGadget<F> {
                 cb.require_zero(result.cells[idx as usize].expr());
             }
 
+            // Pop the byte index and the value from the stack, push the result on the stack
             cb.stack_pop(word_idx.expr());
             cb.stack_pop(value.expr());
             cb.stack_push(result.expr());
 
+            // State transitions
+            let mut state_transitions = StateTransitions::default();
+            state_transitions.gc_delta = Some(GC_DELTA.expr());
+            state_transitions.sp_delta = Some(SP_DELTA.expr());
+            state_transitions.pc_delta = Some(PC_DELTA.expr());
+            state_transitions.gas_delta = Some(GAS.expr());
+            state_transitions.constraints(&mut cb, state_curr, state_next);
+
             cb.constraint(case_selector.expr(), "ByteGadget success")
         };
 
-        let stack_underflow = {
-            let (zero, minus_one) = (
-                Expression::Constant(F::from_u64(1024)),
-                Expression::Constant(F::from_u64(1023)),
-            );
-            let stack_pointer = state_curr.stack_pointer.expr();
-            Constraint {
-                name: "Byte stack underflow",
-                selector: self.stack_underflow.expr(),
-                polys: vec![
-                    vec![
-                        (stack_pointer.clone() - zero)
-                            * (stack_pointer - minus_one),
-                    ],
-                ]
-                .concat(),
-                lookups: vec![],
-            }
-        };
+        // Stack Underflow
+        let stack_underflow = self.stack_underflow.constraint(
+            state_curr.stack_pointer.expr(),
+            2,
+            "BYTE stack underflow",
+        );
 
-        let out_of_gas = {
-            let (one, two, three) = (
-                Expression::Constant(F::from_u64(1)),
-                Expression::Constant(F::from_u64(2)),
-                Expression::Constant(F::from_u64(3)),
-            );
-            let (case_selector, gas_available) = &self.out_of_gas;
-            let gas_overdemand = state_curr.gas_counter.expr() + three.clone()
-                - gas_available.expr();
-            Constraint {
-                name: "BYTE out of gas",
-                selector: case_selector.expr(),
-                polys: [
-                    vec![
-                        (gas_overdemand.clone() - one)
-                            * (gas_overdemand.clone() - two)
-                            * (gas_overdemand - three),
-                    ],
-                ]
-                .concat(),
-                lookups: vec![],
-            }
-        };
+        // Out of gas
+        let out_of_gas = self.out_of_gas.constraint(
+            state_curr.gas_counter.expr(),
+            GAS.as_usize(),
+            "BYTE out of gas",
+        );
 
         // Add common expressions to all cases
-        array::IntoIter::new([success, stack_underflow, out_of_gas])
-            .map(move |mut constraint| {
-                constraint.polys =
-                    [common_polys.clone(), constraint.polys].concat();
-                constraint
-            })
-            .collect()
+        ConstraintBuilder::batch_add_expressions(
+            vec![success, stack_underflow, out_of_gas],
+            vec![opcode.expr() - OPCODE.expr()],
+        )
     }
 
     fn assign(
@@ -245,10 +194,10 @@ impl<F: FieldExt> ByteGadget<F> {
         op_execution_state: &mut CoreStateInstance,
         execution_step: &ExecutionStep,
     ) -> Result<(), Error> {
-        op_execution_state.global_counter += GC_DELTA as usize;
-        op_execution_state.program_counter += PC_DELTA as usize;
-        op_execution_state.stack_pointer += SP_DELTA as usize;
-        op_execution_state.gas_counter += GAS as usize;
+        op_execution_state.global_counter += GC_DELTA;
+        op_execution_state.program_counter += PC_DELTA;
+        op_execution_state.stack_pointer += SP_DELTA;
+        op_execution_state.gas_counter += GAS.as_usize();
 
         self.success.word_idx.assign(
             region,
@@ -275,11 +224,11 @@ impl<F: FieldExt> ByteGadget<F> {
         )?;
 
         for i in 0..32 {
-            let diff = F::from_u64(execution_step.values[0].to_word()[0] as u64) - F::from_u64((31 - i) as u64);
             self.success.is_byte_selected[i].assign(
                 region,
                 offset,
-                diff,
+                F::from_u64(execution_step.values[0].to_word()[0] as u64),
+                F::from_u64((31 - i) as u64),
             )?;
         }
 
@@ -317,18 +266,12 @@ mod test {
                 ExecutionStep {
                     opcode: OpcodeId::PUSH3,
                     case: Case::Success,
-                    values: vec![
-                        0x030201u64.into(),
-                        0x010101u64.into(),
-                    ],
+                    values: vec![0x030201u64.into(), 0x010101u64.into(),],
                 },
                 ExecutionStep {
                     opcode: OpcodeId::PUSH1,
                     case: Case::Success,
-                    values: vec![
-                        29u64.into(),
-                        0x01u64.into(),
-                    ],
+                    values: vec![29u64.into(), 0x01u64.into(),],
                 },
                 ExecutionStep {
                     opcode: OpcodeId::BYTE,
@@ -405,18 +348,12 @@ mod test {
                 ExecutionStep {
                     opcode: OpcodeId::PUSH3,
                     case: Case::Success,
-                    values: vec![
-                        0x030201u64.into(),
-                        0x010101u64.into(),
-                    ],
+                    values: vec![0x030201u64.into(), 0x010101u64.into(),],
                 },
                 ExecutionStep {
                     opcode: OpcodeId::PUSH2,
                     case: Case::Success,
-                    values: vec![
-                        0x0100u64.into(),
-                        0x0101u64.into(),
-                    ],
+                    values: vec![0x0100u64.into(), 0x0101u64.into(),],
                 },
                 ExecutionStep {
                     opcode: OpcodeId::BYTE,

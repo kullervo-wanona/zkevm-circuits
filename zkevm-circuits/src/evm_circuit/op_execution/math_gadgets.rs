@@ -47,3 +47,39 @@ impl<F: FieldExt> IsZeroGadget<F> {
         Ok(value.is_zero())
     }
 }
+
+// a == b
+#[derive(Clone, Debug)]
+pub struct IsEqualGadget<F> {
+    pub(super) is_zero: IsZeroGadget<F>,
+}
+
+impl<F: FieldExt> IsEqualGadget<F> {
+    pub const NUM_CELLS: usize = IsZeroGadget::<F>::NUM_CELLS;
+    pub const NUM_WORDS: usize = IsZeroGadget::<F>::NUM_WORDS;
+
+    pub(super) fn construct(alloc: &mut CaseAllocation<F>) -> Self {
+        Self {
+            is_zero: IsZeroGadget::<F>::construct(alloc),
+        }
+    }
+
+    pub(super) fn constraints(
+        &self,
+        cb: &mut ConstraintBuilder<F>,
+        lhs: Expression<F>,
+        rhs: Expression<F>,
+    ) -> Expression<F> {
+        self.is_zero.constraints(cb, (lhs) - (rhs))
+    }
+
+    pub(super) fn assign(
+        &self,
+        region: &mut Region<'_, F>,
+        offset: usize,
+        lhs: F,
+        rhs: F,
+    ) -> Result<bool, Error> {
+        self.is_zero.assign(region, offset, lhs - rhs)
+    }
+}
