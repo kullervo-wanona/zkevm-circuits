@@ -42,12 +42,9 @@ impl<F: FieldExt> OutOfGasCase<F> {
         gas_used: usize,
         name: &'static str,
     ) -> Constraint<F> {
-        let mut set = vec![];
-        for idx in 1..=gas_used {
-            set.push(idx.expr());
-        }
         let gas_overdemand = state_curr.gas_counter.expr() + gas_used.expr()
             - self.gas_available.expr();
+        let set = (1..=gas_used).map(|i| i.expr()).collect();
         let mut cb = ConstraintBuilder::default();
         cb.require_in_set(gas_overdemand, set);
         cb.constraint(self.case_selector.expr(), name)
@@ -55,11 +52,14 @@ impl<F: FieldExt> OutOfGasCase<F> {
 
     pub(crate) fn assign(
         &self,
-        _region: &mut Region<'_, F>,
-        _offset: usize,
-        _op_execution_state: &mut CoreStateInstance,
-        _execution_step: &ExecutionStep,
+        region: &mut Region<'_, F>,
+        offset: usize,
+        _state: &mut CoreStateInstance,
+        _step: &ExecutionStep,
     ) -> Result<(), Error> {
+        self.case_selector
+            .assign(region, offset, Some(F::from_u64(0)))
+            .unwrap();
         Ok(())
     }
 }
@@ -90,10 +90,9 @@ impl<F: FieldExt> StackUnderflowCase<F> {
         num_popped: usize,
         name: &'static str,
     ) -> Constraint<F> {
-        let mut set = vec![];
-        for idx in 0..num_popped {
-            set.push((STACK_START_IDX - idx).expr());
-        }
+        let set = (0..num_popped)
+            .map(|i| (STACK_START_IDX - i).expr())
+            .collect();
         let mut cb = ConstraintBuilder::default();
         cb.require_in_set(state_curr.stack_pointer.expr(), set);
         cb.constraint(self.case_selector.expr(), name)
@@ -101,17 +100,20 @@ impl<F: FieldExt> StackUnderflowCase<F> {
 
     pub(crate) fn assign(
         &self,
-        _region: &mut Region<'_, F>,
-        _offset: usize,
-        _op_execution_state: &mut CoreStateInstance,
-        _execution_step: &ExecutionStep,
+        region: &mut Region<'_, F>,
+        offset: usize,
+        _state: &mut CoreStateInstance,
+        _step: &ExecutionStep,
     ) -> Result<(), Error> {
+        self.case_selector
+            .assign(region, offset, Some(F::from_u64(0)))
+            .unwrap();
         Ok(())
     }
 }
 
 // Makes sure all state transition variables are always constrained.
-// This makes it impossible in opcodes to forget to constrain
+// This makes it impossible for opcodes to forget to constrain
 // any state variables. If no update is specified it is assumed
 // that the state variable needs to remain the same (which may not
 // be correct, but this will easily be detected while testing).
@@ -121,7 +123,6 @@ pub(crate) struct StateTransitions<F> {
     pub sp_delta: Option<Expression<F>>,
     pub pc_delta: Option<Expression<F>>,
     pub gas_delta: Option<Expression<F>>,
-    pub next_memory_size: Option<Expression<F>>,
 }
 
 impl<F: FieldExt> StateTransitions<F> {

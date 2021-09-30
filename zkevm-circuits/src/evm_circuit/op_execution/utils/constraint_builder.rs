@@ -38,6 +38,14 @@ impl<F: FieldExt> ConstraintBuilder<F> {
         self.add_expression(expression);
     }
 
+    pub(crate) fn require_equal(
+        &mut self,
+        lhs: Expression<F>,
+        rhs: Expression<F>,
+    ) {
+        self.add_expression((lhs) - (rhs));
+    }
+
     pub(crate) fn require_in_range(
         &mut self,
         value: Expression<F>,

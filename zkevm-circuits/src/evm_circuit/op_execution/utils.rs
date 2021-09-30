@@ -38,20 +38,29 @@ pub(crate) mod sum {
     }
 }
 
-/// OpGadget implementer
+/// Counts the number of repetitions
+#[macro_export]
+macro_rules! count {
+    () => (0usize);
+    ( $x:tt $($xs:tt)* ) => (1usize + crate::count!($($xs)*));
+}
+
+/// Common OpGadget implementer
 #[macro_export]
 macro_rules! impl_op_gadget {
-    ($name:ident, $op:expr, $num:expr, $(($constr_name:tt, $case_name:ident, $case:ident, $(($args:expr)),*)),* ) => {
+    ([$first_op:ident $(,$op:ident)*], $name:ident { $($case:ident ($($args:expr),*) ),* $(,)? }) => {
 
-        #[derive(Clone, Debug)]
-        pub struct $name<F> {
-            $(
-                $case_name: $case<F>,
-            )*
+        paste::paste! {
+            #[derive(Clone, Debug)]
+            pub struct $name<F> {
+                $(
+                    [<$case:snake>]: $case<F>,
+                )*
+            }
         }
 
         impl<F: FieldExt> OpGadget<F> for $name<F> {
-            const RESPONSIBLE_OPCODES: &'static [OpcodeId] = &[$op];
+            const RESPONSIBLE_OPCODES: &'static [OpcodeId] = &[OpcodeId::$first_op, $(OpcodeId::$op),*];
 
             const CASE_CONFIGS: &'static [CaseConfig] = &[
                 $(
@@ -60,16 +69,18 @@ macro_rules! impl_op_gadget {
             ];
 
             fn construct(case_allocations: Vec<CaseAllocation<F>>) -> Self {
-                let [
-                    $(
-                        mut $case_name,
-                    )*
-                ]: [CaseAllocation<F>; $num] =
-                    case_allocations.try_into().unwrap();
-                Self {
-                    $(
-                        $case_name: $case::construct(&mut $case_name),
-                    )*
+                paste::paste! {
+                    let [
+                        $(
+                            mut [<$case:snake>],
+                        )*
+                    ]: [CaseAllocation<F>; crate::count!($($case)*)] =
+                        case_allocations.try_into().unwrap();
+                    Self {
+                        $(
+                            [<$case:snake>]: $case::construct(&mut [<$case:snake>]),
+                        )*
+                    }
                 }
             }
 
@@ -78,49 +89,56 @@ macro_rules! impl_op_gadget {
                 state_curr: &OpExecutionState<F>,
                 state_next: &OpExecutionState<F>,
             ) -> Vec<Constraint<F>> {
-                $(
-                    let $case_name = self.$case_name.constraint(
-                        state_curr,
-                        state_next,
-                        $(
-                            $args,
-                        )*
-                        $constr_name,
-                    );
-                )*
-
-                let cases = vec![
+                paste::paste! {
                     $(
-                        $case_name,
+                        let [<$case:snake>] = self.[<$case:snake>].constraint(
+                            state_curr,
+                            state_next,
+                            $(
+                                $args,
+                            )*
+                            concat!(stringify!($name), " ", stringify!([<$case:snake>])),
+                        );
                     )*
-                ];
-
+                    let cases = vec![
+                        $(
+                            [<$case:snake>],
+                        )*
+                    ];
+                }
                 // Add common expressions to all cases
                 utils::batch_add_expressions(
                     cases,
-                    vec![state_curr.opcode.expr() - $op.expr()],
+                    vec![
+                        (state_curr.opcode.expr() - OpcodeId::$first_op.expr())
+                        $(
+                            * (state_curr.opcode.expr() - OpcodeId::$op.expr())
+                        )*
+                    ],
                 )
             }
 
-            fn assign(
-                &self,
-                region: &mut Region<'_, F>,
-                offset: usize,
-                op_execution_state: &mut CoreStateInstance,
-                execution_step: &ExecutionStep,
-            ) -> Result<(), Error> {
-                $(
-                    if execution_step.case == $case::<F>::CASE_CONFIG.case {
-                        return self.$case_name.assign(
-                            region,
-                            offset,
-                            op_execution_state,
-                            execution_step,
-                        );
+            paste::paste! {
+                fn assign(
+                    &self,
+                    region: &mut Region<'_, F>,
+                    offset: usize,
+                    op_execution_state: &mut CoreStateInstance,
+                    execution_step: &ExecutionStep,
+                ) -> Result<(), Error> {
+                    $(
+                        if execution_step.case == $case::<F>::CASE_CONFIG.case {
+                            return self.[<$case:snake>].assign(
+                                region,
+                                offset,
+                                op_execution_state,
+                                execution_step,
+                            );
+                        }
+                    )*
+                    else {
+                        unreachable!();
                     }
-                )*
-                else {
-                    unreachable!();
                 }
             }
         }
