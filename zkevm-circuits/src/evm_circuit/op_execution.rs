@@ -16,11 +16,9 @@ use std::{collections::HashMap, ops::Range};
 
 mod arithmetic;
 mod byte;
-mod common_cases;
 mod comparator;
-mod constraint_builder;
-mod math_gadgets;
 mod push;
+mod utils;
 
 use arithmetic::AddGadget;
 use byte::ByteGadget;
@@ -44,7 +42,7 @@ fn bool_switches_constraints<F: FieldExt>(
 }
 
 #[derive(Debug)]
-struct CaseConfig {
+pub(crate) struct CaseConfig {
     case: Case,
     num_word: usize,
     num_cell: usize,
@@ -121,7 +119,7 @@ impl CaseConfig {
 }
 
 #[derive(Debug)]
-struct CaseAllocation<F> {
+pub(crate) struct CaseAllocation<F> {
     selector: Cell<F>,
     words: Vec<Word<F>>,
     cells: Vec<Cell<F>>,

@@ -162,7 +162,7 @@ pub(crate) enum Lookup<F> {
 }
 
 #[derive(Clone, Debug)]
-struct Constraint<F> {
+pub(crate) struct Constraint<F> {
     name: &'static str,
     selector: Expression<F>,
     polys: Vec<Expression<F>>,

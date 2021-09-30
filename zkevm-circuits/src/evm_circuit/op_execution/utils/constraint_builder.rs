@@ -1,40 +1,44 @@
-use super::super::{BusMappingLookup, Cell, Constraint, FixedLookup, Lookup};
+use super::super::super::{BusMappingLookup, Constraint, FixedLookup, Lookup};
 use crate::util::Expr;
 use halo2::{arithmetic::FieldExt, plonk::Expression};
 
 #[derive(Clone, Debug)]
 pub struct ConstraintBuilder<F> {
     pub expressions: Vec<Expression<F>>,
-    pub(super) lookups: Vec<Lookup<F>>,
-    pub call_id: Expression<F>,
+    pub(crate) lookups: Vec<Lookup<F>>,
     pub stack_offset: i32,
+    pub call_id: Option<Expression<F>>,
 }
 
 impl<F: FieldExt> ConstraintBuilder<F> {
-    pub(super) fn with_call_id(call_id: Expression<F>) -> Self {
+    pub(crate) fn with_call_id(call_id: Expression<F>) -> Self {
+        Self::init(Some(call_id))
+    }
+
+    pub(crate) fn default() -> Self {
+        Self::init(None)
+    }
+
+    fn init(call_id: Option<Expression<F>>) -> Self {
         ConstraintBuilder {
             expressions: vec![],
             lookups: vec![],
-            call_id: call_id,
             stack_offset: 0,
+            call_id: call_id,
         }
-    }
-
-    pub(super) fn default() -> Self {
-        Self::with_call_id(0.expr())
     }
 
     // Common
 
-    pub(super) fn require_boolean(&mut self, value: Expression<F>) {
+    pub(crate) fn require_boolean(&mut self, value: Expression<F>) {
         self.add_expression(value.clone() * (1.expr() - value));
     }
 
-    pub(super) fn require_zero(&mut self, expression: Expression<F>) {
+    pub(crate) fn require_zero(&mut self, expression: Expression<F>) {
         self.add_expression(expression);
     }
 
-    pub(super) fn require_in_range(
+    pub(crate) fn require_in_range(
         &mut self,
         value: Expression<F>,
         range: u64,
@@ -50,7 +54,7 @@ impl<F: FieldExt> ConstraintBuilder<F> {
         ));
     }
 
-    pub(super) fn require_in_set(
+    pub(crate) fn require_in_set(
         &mut self,
         value: Expression<F>,
         set: Vec<Expression<F>>,
@@ -64,12 +68,12 @@ impl<F: FieldExt> ConstraintBuilder<F> {
 
     // Stack
 
-    pub(super) fn stack_pop(&mut self, value: Expression<F>) {
+    pub(crate) fn stack_pop(&mut self, value: Expression<F>) {
         self.stack_lookup(value, false);
         self.stack_offset += 1;
     }
 
-    pub(super) fn stack_push(&mut self, value: Expression<F>) {
+    pub(crate) fn stack_push(&mut self, value: Expression<F>) {
         self.stack_offset -= 1;
         self.stack_lookup(value, true);
     }
@@ -84,7 +88,7 @@ impl<F: FieldExt> ConstraintBuilder<F> {
 
     // Memory
 
-    pub(super) fn memory_write(
+    pub(crate) fn memory_write(
         &mut self,
         address: Expression<F>,
         bytes: Vec<Expression<F>>,
@@ -92,7 +96,7 @@ impl<F: FieldExt> ConstraintBuilder<F> {
         self.memory_lookup(address, bytes, true)
     }
 
-    pub(super) fn memory_read(
+    pub(crate) fn memory_read(
         &mut self,
         address: Expression<F>,
         bytes: Vec<Expression<F>>,
@@ -109,7 +113,7 @@ impl<F: FieldExt> ConstraintBuilder<F> {
         for idx in 0..bytes.len() {
             self.add_lookup(Lookup::BusMappingLookup(
                 BusMappingLookup::Memory {
-                    call_id: self.call_id.clone(),
+                    call_id: self.call_id.clone().unwrap(),
                     index: address.clone()
                         + Expression::Constant(F::from_u64(idx as u64)),
                     value: bytes[bytes.len() - 1 - idx].clone(),
@@ -121,21 +125,21 @@ impl<F: FieldExt> ConstraintBuilder<F> {
 
     // General
 
-    pub(super) fn add_expression(&mut self, expression: Expression<F>) {
+    pub(crate) fn add_expression(&mut self, expression: Expression<F>) {
         self.expressions.push(expression);
     }
 
-    pub(super) fn add_expressions(&mut self, expressions: Vec<Expression<F>>) {
+    pub(crate) fn add_expressions(&mut self, expressions: Vec<Expression<F>>) {
         self.expressions.extend(expressions);
     }
 
-    pub(super) fn add_lookup(&mut self, lookup: Lookup<F>) {
+    pub(crate) fn add_lookup(&mut self, lookup: Lookup<F>) {
         self.lookups.push(lookup);
     }
 
     // Constraint
 
-    pub(super) fn constraint(
+    pub(crate) fn constraint(
         &self,
         selector: Expression<F>,
         name: &'static str,
@@ -146,51 +150,5 @@ impl<F: FieldExt> ConstraintBuilder<F> {
             polys: self.expressions.clone(),
             lookups: self.lookups.clone(),
         }
-    }
-}
-
-/// Static utils
-impl<F: FieldExt> ConstraintBuilder<F> {
-    pub(super) fn batch_add_expressions(
-        constraints: Vec<Constraint<F>>,
-        expressions: Vec<Expression<F>>,
-    ) -> Vec<Constraint<F>> {
-        constraints
-            .into_iter()
-            .map(|mut constraint| {
-                constraint.polys =
-                    [constraint.polys.clone(), expressions.clone().to_vec()]
-                        .concat();
-                constraint
-            })
-            .collect()
-    }
-
-    pub(super) fn from_bytes(bytes: Vec<Cell<F>>) -> Expression<F> {
-        let mut multiplier = 1.expr();
-        let mut value = 0.expr();
-        for byte in bytes.iter() {
-            value = value + byte.expr() * multiplier.clone();
-            multiplier = multiplier * 256.expr();
-        }
-        value
-    }
-
-    pub(super) fn from_bytes_witness(bytes: Vec<u8>) -> F {
-        let mut value = F::from_u64(0);
-        let mut multiplier = F::from_u64(1);
-        for byte in bytes.iter() {
-            value = value + (F::from_u64(*byte as u64) * multiplier);
-            multiplier = multiplier * F::from_u64(256);
-        }
-        value
-    }
-
-    pub(super) fn sum(cells: Vec<Cell<F>>) -> Expression<F> {
-        let mut value = 0.expr();
-        for cell in cells.iter() {
-            value = value + cell.expr();
-        }
-        value
     }
 }

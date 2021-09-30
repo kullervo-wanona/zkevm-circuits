@@ -1,5 +1,5 @@
+use super::super::CaseAllocation;
 use super::super::Cell;
-use super::CaseAllocation;
 use crate::util::Expr;
 use halo2::plonk::Error;
 use halo2::{arithmetic::FieldExt, circuit::Region, plonk::Expression};
@@ -9,20 +9,20 @@ use super::constraint_builder::ConstraintBuilder;
 // a == 0
 #[derive(Clone, Debug)]
 pub struct IsZeroGadget<F> {
-    pub(super) inverse: Cell<F>,
+    pub(crate) inverse: Cell<F>,
 }
 
 impl<F: FieldExt> IsZeroGadget<F> {
     pub const NUM_CELLS: usize = 1;
     pub const NUM_WORDS: usize = 0;
 
-    pub(super) fn construct(alloc: &mut CaseAllocation<F>) -> Self {
+    pub(crate) fn construct(alloc: &mut CaseAllocation<F>) -> Self {
         Self {
             inverse: alloc.cells.pop().unwrap(),
         }
     }
 
-    pub(super) fn constraints(
+    pub(crate) fn constraints(
         &self,
         cb: &mut ConstraintBuilder<F>,
         value: Expression<F>,
@@ -36,7 +36,7 @@ impl<F: FieldExt> IsZeroGadget<F> {
         is_zero
     }
 
-    pub(super) fn assign(
+    pub(crate) fn assign(
         &self,
         region: &mut Region<'_, F>,
         offset: usize,
@@ -51,20 +51,20 @@ impl<F: FieldExt> IsZeroGadget<F> {
 // a == b
 #[derive(Clone, Debug)]
 pub struct IsEqualGadget<F> {
-    pub(super) is_zero: IsZeroGadget<F>,
+    pub(crate) is_zero: IsZeroGadget<F>,
 }
 
 impl<F: FieldExt> IsEqualGadget<F> {
     pub const NUM_CELLS: usize = IsZeroGadget::<F>::NUM_CELLS;
     pub const NUM_WORDS: usize = IsZeroGadget::<F>::NUM_WORDS;
 
-    pub(super) fn construct(alloc: &mut CaseAllocation<F>) -> Self {
+    pub(crate) fn construct(alloc: &mut CaseAllocation<F>) -> Self {
         Self {
             is_zero: IsZeroGadget::<F>::construct(alloc),
         }
     }
 
-    pub(super) fn constraints(
+    pub(crate) fn constraints(
         &self,
         cb: &mut ConstraintBuilder<F>,
         lhs: Expression<F>,
@@ -73,7 +73,7 @@ impl<F: FieldExt> IsEqualGadget<F> {
         self.is_zero.constraints(cb, (lhs) - (rhs))
     }
 
-    pub(super) fn assign(
+    pub(crate) fn assign(
         &self,
         region: &mut Region<'_, F>,
         offset: usize,
