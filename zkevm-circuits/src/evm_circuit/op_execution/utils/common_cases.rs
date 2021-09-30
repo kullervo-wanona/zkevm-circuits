@@ -1,8 +1,11 @@
-use super::super::{Case, Cell, Constraint};
-use super::super::{CaseAllocation, CaseConfig, OpExecutionState};
+use super::super::{
+    Case, CaseAllocation, CaseConfig, Cell, Constraint, CoreStateInstance,
+    ExecutionStep, OpExecutionState,
+};
 use super::constraint_builder::ConstraintBuilder;
 use crate::util::Expr;
-use halo2::{arithmetic::FieldExt, plonk::Expression};
+use halo2::plonk::Error;
+use halo2::{arithmetic::FieldExt, circuit::Region, plonk::Expression};
 
 pub const STACK_START_IDX: usize = 1024;
 
@@ -13,7 +16,7 @@ pub(crate) struct OutOfGasCase<F> {
 }
 
 impl<F: FieldExt> OutOfGasCase<F> {
-    pub(crate) const CASE_CONFIG: CaseConfig = CaseConfig {
+    pub(crate) const CASE_CONFIG: &'static CaseConfig = &CaseConfig {
         case: Case::OutOfGas,
         num_word: 0,
         num_cell: 0,
@@ -35,6 +38,7 @@ impl<F: FieldExt> OutOfGasCase<F> {
     pub(crate) fn constraint(
         &self,
         state_curr: &OpExecutionState<F>,
+        _state_next: &OpExecutionState<F>,
         gas_used: usize,
         name: &'static str,
     ) -> Constraint<F> {
@@ -48,6 +52,16 @@ impl<F: FieldExt> OutOfGasCase<F> {
         cb.require_in_set(gas_overdemand, set);
         cb.constraint(self.case_selector.expr(), name)
     }
+
+    pub(crate) fn assign(
+        &self,
+        _region: &mut Region<'_, F>,
+        _offset: usize,
+        _op_execution_state: &mut CoreStateInstance,
+        _execution_step: &ExecutionStep,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -56,7 +70,7 @@ pub(crate) struct StackUnderflowCase<F> {
 }
 
 impl<F: FieldExt> StackUnderflowCase<F> {
-    pub(crate) const CASE_CONFIG: CaseConfig = CaseConfig {
+    pub(crate) const CASE_CONFIG: &'static CaseConfig = &CaseConfig {
         case: Case::StackUnderflow,
         num_word: 0,
         num_cell: 0,
@@ -72,6 +86,7 @@ impl<F: FieldExt> StackUnderflowCase<F> {
     pub(crate) fn constraint(
         &self,
         state_curr: &OpExecutionState<F>,
+        _state_next: &OpExecutionState<F>,
         num_popped: usize,
         name: &'static str,
     ) -> Constraint<F> {
@@ -82,6 +97,16 @@ impl<F: FieldExt> StackUnderflowCase<F> {
         let mut cb = ConstraintBuilder::default();
         cb.require_in_set(state_curr.stack_pointer.expr(), set);
         cb.constraint(self.case_selector.expr(), name)
+    }
+
+    pub(crate) fn assign(
+        &self,
+        _region: &mut Region<'_, F>,
+        _offset: usize,
+        _op_execution_state: &mut CoreStateInstance,
+        _execution_step: &ExecutionStep,
+    ) -> Result<(), Error> {
+        Ok(())
     }
 }
 

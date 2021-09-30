@@ -275,7 +275,7 @@ impl CoreStateInstance {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Case {
+pub(crate) enum Case {
     Success,
     // out of gas
     OutOfGas,

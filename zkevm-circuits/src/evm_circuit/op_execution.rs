@@ -41,9 +41,9 @@ fn bool_switches_constraints<F: FieldExt>(
     constraints
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct CaseConfig {
-    case: Case,
+    pub(crate) case: Case,
     num_word: usize,
     num_cell: usize,
     will_halt: bool,
