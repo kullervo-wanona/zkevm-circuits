@@ -1,8 +1,6 @@
 use super::super::{Case, Cell, Constraint, ExecutionStep, Word};
 use super::utils;
-use super::utils::common_cases::{
-    OutOfGasCase, StackUnderflowCase, StateTransitions,
-};
+use super::utils::common_cases::{OutOfGasCase, StackUnderflowCase};
 use super::utils::constraint_builder::ConstraintBuilder;
 use super::utils::math_gadgets::{IsEqualGadget, IsZeroGadget};
 use super::{
@@ -109,7 +107,7 @@ impl<F: FieldExt> ByteSuccessCase<F> {
         cb.stack_push(self.result.expr());
 
         // State transitions
-        let mut state_transitions = StateTransitions::default();
+        let mut state_transitions = utils::StateTransitions::default();
         state_transitions.gc_delta = Some(GC_DELTA.expr());
         state_transitions.sp_delta = Some(SP_DELTA.expr());
         state_transitions.pc_delta = Some(PC_DELTA.expr());

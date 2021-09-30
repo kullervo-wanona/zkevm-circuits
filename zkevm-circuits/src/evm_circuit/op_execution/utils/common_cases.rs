@@ -5,7 +5,7 @@ use super::super::{
 use super::constraint_builder::ConstraintBuilder;
 use crate::util::Expr;
 use halo2::plonk::Error;
-use halo2::{arithmetic::FieldExt, circuit::Region, plonk::Expression};
+use halo2::{arithmetic::FieldExt, circuit::Region};
 
 pub const STACK_START_IDX: usize = 1024;
 
@@ -13,6 +13,7 @@ pub const STACK_START_IDX: usize = 1024;
 pub(crate) struct OutOfGasCase<F> {
     case_selector: Cell<F>,
     gas_available: Cell<F>,
+    gas_used: usize,
 }
 
 impl<F: FieldExt> OutOfGasCase<F> {
@@ -23,7 +24,10 @@ impl<F: FieldExt> OutOfGasCase<F> {
         will_halt: true,
     };
 
-    pub(crate) fn construct(alloc: &CaseAllocation<F>) -> Self {
+    pub(crate) fn construct(
+        alloc: &CaseAllocation<F>,
+        gas_used: usize,
+    ) -> Self {
         Self {
             case_selector: alloc.selector.clone(),
             gas_available: alloc
@@ -32,6 +36,7 @@ impl<F: FieldExt> OutOfGasCase<F> {
                 .unwrap()
                 .gas_available
                 .clone(),
+            gas_used: gas_used,
         }
     }
 
@@ -39,12 +44,12 @@ impl<F: FieldExt> OutOfGasCase<F> {
         &self,
         state_curr: &OpExecutionState<F>,
         _state_next: &OpExecutionState<F>,
-        gas_used: usize,
         name: &'static str,
     ) -> Constraint<F> {
-        let gas_overdemand = state_curr.gas_counter.expr() + gas_used.expr()
+        let gas_overdemand = state_curr.gas_counter.expr()
+            + self.gas_used.expr()
             - self.gas_available.expr();
-        let set = (1..=gas_used).map(|i| i.expr()).collect();
+        let set = (1..=self.gas_used).map(|i| i.expr()).collect();
         let mut cb = ConstraintBuilder::default();
         cb.require_in_set(gas_overdemand, set);
         cb.constraint(self.case_selector.expr(), name)
@@ -67,6 +72,7 @@ impl<F: FieldExt> OutOfGasCase<F> {
 #[derive(Clone, Debug)]
 pub(crate) struct StackUnderflowCase<F> {
     case_selector: Cell<F>,
+    num_popped: usize,
 }
 
 impl<F: FieldExt> StackUnderflowCase<F> {
@@ -77,9 +83,13 @@ impl<F: FieldExt> StackUnderflowCase<F> {
         will_halt: true,
     };
 
-    pub(crate) fn construct(alloc: &CaseAllocation<F>) -> Self {
+    pub(crate) fn construct(
+        alloc: &CaseAllocation<F>,
+        num_popped: usize,
+    ) -> Self {
         Self {
             case_selector: alloc.selector.clone(),
+            num_popped: num_popped,
         }
     }
 
@@ -87,10 +97,9 @@ impl<F: FieldExt> StackUnderflowCase<F> {
         &self,
         state_curr: &OpExecutionState<F>,
         _state_next: &OpExecutionState<F>,
-        num_popped: usize,
         name: &'static str,
     ) -> Constraint<F> {
-        let set = (0..num_popped)
+        let set = (0..self.num_popped)
             .map(|i| (STACK_START_IDX - i).expr())
             .collect();
         let mut cb = ConstraintBuilder::default();
@@ -109,52 +118,5 @@ impl<F: FieldExt> StackUnderflowCase<F> {
             .assign(region, offset, Some(F::from_u64(0)))
             .unwrap();
         Ok(())
-    }
-}
-
-// Makes sure all state transition variables are always constrained.
-// This makes it impossible for opcodes to forget to constrain
-// any state variables. If no update is specified it is assumed
-// that the state variable needs to remain the same (which may not
-// be correct, but this will easily be detected while testing).
-#[derive(Clone, Debug, Default)]
-pub(crate) struct StateTransitions<F> {
-    pub gc_delta: Option<Expression<F>>,
-    pub sp_delta: Option<Expression<F>>,
-    pub pc_delta: Option<Expression<F>>,
-    pub gas_delta: Option<Expression<F>>,
-}
-
-impl<F: FieldExt> StateTransitions<F> {
-    pub(crate) fn constraints(
-        &self,
-        cb: &mut ConstraintBuilder<F>,
-        state_curr: &OpExecutionState<F>,
-        state_next: &OpExecutionState<F>,
-    ) {
-        // Global Counter
-        cb.add_expression(
-            state_next.global_counter.expr()
-                - (state_curr.global_counter.expr()
-                    + self.gc_delta.clone().unwrap_or(0.expr())),
-        );
-        // Stack Pointer
-        cb.add_expression(
-            state_next.stack_pointer.expr()
-                - (state_curr.stack_pointer.expr()
-                    + self.sp_delta.clone().unwrap_or(0.expr())),
-        );
-        // Program Counter
-        cb.add_expression(
-            state_next.program_counter.expr()
-                - (state_curr.program_counter.expr()
-                    + self.pc_delta.clone().unwrap_or(0.expr())),
-        );
-        // Gas Counter
-        cb.add_expression(
-            state_next.gas_counter.expr()
-                - (state_curr.gas_counter.expr()
-                    + self.gas_delta.clone().unwrap_or(0.expr())),
-        );
     }
 }

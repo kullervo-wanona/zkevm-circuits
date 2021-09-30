@@ -1,11 +1,61 @@
 //! Reusable utilities for the op code implementations.
 
 use super::super::Constraint;
+use super::utils::constraint_builder::ConstraintBuilder;
+use super::OpExecutionState;
+use crate::util::Expr;
 use halo2::{arithmetic::FieldExt, plonk::Expression};
 
 pub(crate) mod common_cases;
 pub(crate) mod constraint_builder;
 pub(crate) mod math_gadgets;
+
+// Makes sure all state transition variables are always constrained.
+// This makes it impossible for opcodes to forget to constrain
+// any state variables. If no update is specified it is assumed
+// that the state variable needs to remain the same (which may not
+// be correct, but this will easily be detected while testing).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct StateTransitions<F> {
+    pub gc_delta: Option<Expression<F>>,
+    pub sp_delta: Option<Expression<F>>,
+    pub pc_delta: Option<Expression<F>>,
+    pub gas_delta: Option<Expression<F>>,
+}
+
+impl<F: FieldExt> StateTransitions<F> {
+    pub(crate) fn constraints(
+        &self,
+        cb: &mut ConstraintBuilder<F>,
+        state_curr: &OpExecutionState<F>,
+        state_next: &OpExecutionState<F>,
+    ) {
+        // Global Counter
+        cb.add_expression(
+            state_next.global_counter.expr()
+                - (state_curr.global_counter.expr()
+                    + self.gc_delta.clone().unwrap_or(0.expr())),
+        );
+        // Stack Pointer
+        cb.add_expression(
+            state_next.stack_pointer.expr()
+                - (state_curr.stack_pointer.expr()
+                    + self.sp_delta.clone().unwrap_or(0.expr())),
+        );
+        // Program Counter
+        cb.add_expression(
+            state_next.program_counter.expr()
+                - (state_curr.program_counter.expr()
+                    + self.pc_delta.clone().unwrap_or(0.expr())),
+        );
+        // Gas Counter
+        cb.add_expression(
+            state_next.gas_counter.expr()
+                - (state_curr.gas_counter.expr()
+                    + self.gas_delta.clone().unwrap_or(0.expr())),
+        );
+    }
+}
 
 pub(crate) fn batch_add_expressions<F: FieldExt>(
     constraints: Vec<Constraint<F>>,
@@ -48,7 +98,7 @@ macro_rules! count {
 /// Common OpGadget implementer
 #[macro_export]
 macro_rules! impl_op_gadget {
-    ([$first_op:ident $(,$op:ident)*], $name:ident { $($case:ident ($($args:expr),*) ),* $(,)? }) => {
+    ([$($op:ident),*], $name:ident { $($case:ident ($($args:expr),*) ),* $(,)? }) => {
 
         paste::paste! {
             #[derive(Clone, Debug)]
@@ -60,7 +110,7 @@ macro_rules! impl_op_gadget {
         }
 
         impl<F: FieldExt> OpGadget<F> for $name<F> {
-            const RESPONSIBLE_OPCODES: &'static [OpcodeId] = &[OpcodeId::$first_op, $(OpcodeId::$op),*];
+            const RESPONSIBLE_OPCODES: &'static [OpcodeId] = &[$(OpcodeId::$op),*];
 
             const CASE_CONFIGS: &'static [CaseConfig] = &[
                 $(
@@ -78,7 +128,12 @@ macro_rules! impl_op_gadget {
                         case_allocations.try_into().unwrap();
                     Self {
                         $(
-                            [<$case:snake>]: $case::construct(&mut [<$case:snake>]),
+                            [<$case:snake>]: $case::construct(
+                                &mut [<$case:snake>],
+                                $(
+                                    $args,
+                                )*
+                            ),
                         )*
                     }
                 }
@@ -94,9 +149,6 @@ macro_rules! impl_op_gadget {
                         let [<$case:snake>] = self.[<$case:snake>].constraint(
                             state_curr,
                             state_next,
-                            $(
-                                $args,
-                            )*
                             concat!(stringify!($name), " ", stringify!([<$case:snake>])),
                         );
                     )*
@@ -107,14 +159,14 @@ macro_rules! impl_op_gadget {
                     ];
                 }
                 // Add common expressions to all cases
+                let mut cb = ConstraintBuilder::default();
+                cb.require_in_set(
+                    state_curr.opcode.expr(),
+                    vec![$(OpcodeId::$op.expr()),*],
+                );
                 utils::batch_add_expressions(
                     cases,
-                    vec![
-                        (state_curr.opcode.expr() - OpcodeId::$first_op.expr())
-                        $(
-                            * (state_curr.opcode.expr() - OpcodeId::$op.expr())
-                        )*
-                    ],
+                    cb.expressions,
                 )
             }
 
