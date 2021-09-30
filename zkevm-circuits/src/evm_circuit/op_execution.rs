@@ -17,12 +17,14 @@ use std::{collections::HashMap, ops::Range};
 mod arithmetic;
 mod byte;
 mod comparator;
+mod pop;
 mod push;
 mod utils;
 
 use arithmetic::AddGadget;
 use byte::ByteGadget;
 use comparator::LtGadget;
+use pop::PopGadget;
 use push::PushGadget;
 
 fn bool_switches_constraints<F: FieldExt>(
@@ -214,6 +216,7 @@ pub(crate) struct OpExecutionGadget<F> {
     push_gadget: PushGadget<F>,
     lt_gadget: LtGadget<F>,
     byte_gadget: ByteGadget<F>,
+    pop_gadget: PopGadget<F>,
 }
 
 impl<F: FieldExt> OpExecutionGadget<F> {
@@ -270,6 +273,7 @@ impl<F: FieldExt> OpExecutionGadget<F> {
         construct_op_gadget!(add_gadget);
         construct_op_gadget!(push_gadget);
         construct_op_gadget!(lt_gadget);
+        construct_op_gadget!(pop_gadget);
         construct_op_gadget!(byte_gadget);
         let _ = qs_op_idx;
 
@@ -309,6 +313,7 @@ impl<F: FieldExt> OpExecutionGadget<F> {
             add_gadget,
             push_gadget,
             lt_gadget,
+            pop_gadget,
             byte_gadget,
         }
     }
@@ -548,6 +553,12 @@ impl<F: FieldExt> OpExecutionGadget<F> {
                     execution_step,
                 )?,
                 (_, OpcodeId::LT | OpcodeId::GT) => self.lt_gadget.assign(
+                    region,
+                    offset,
+                    core_state,
+                    execution_step,
+                )?,
+                (_, OpcodeId::POP) => self.pop_gadget.assign(
                     region,
                     offset,
                     core_state,

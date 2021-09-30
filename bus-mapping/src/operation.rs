@@ -11,7 +11,6 @@ use crate::error::Error;
 pub use container::OperationContainer;
 use core::cmp::Ordering;
 use core::fmt::Debug;
-use num::BigUint;
 use std::convert::TryFrom;
 
 /// Marker that defines whether an Operation performs a `READ` or a `WRITE`.
@@ -62,22 +61,22 @@ pub struct MemoryOp {
     rw: RW,
     gc: GlobalCounter,
     addr: MemoryAddress,
-    value: Vec<u8>,
+    value: u8,
 }
 
 impl MemoryOp {
     /// Create a new instance of a `MemoryOp` from it's components.
-    pub fn new<T: Into<Vec<u8>>>(
+    pub fn new(
         rw: RW,
         gc: GlobalCounter,
         addr: MemoryAddress,
-        value: T,
+        value: u8,
     ) -> MemoryOp {
         MemoryOp {
             rw,
             gc,
             addr,
-            value: value.into(),
+            value,
         }
     }
 
@@ -103,8 +102,8 @@ impl MemoryOp {
     }
 
     /// Returns the bytes read or written by this operation.
-    pub fn value(&self) -> &[u8] {
-        &self.value
+    pub fn value(&self) -> u8 {
+        self.value
     }
 }
 
@@ -238,7 +237,7 @@ pub struct StorageOp {
     addr: MemoryAddress,
     value: EvmWord,
     value_prev: EvmWord,
-    storage_key: BigUint,
+    storage_key: EvmWord,
 }
 
 impl StorageOp {
@@ -249,7 +248,7 @@ impl StorageOp {
         addr: MemoryAddress, // todo: use some other struct?
         value: EvmWord,
         value_prev: EvmWord,
-        storage_key: BigUint,
+        storage_key: EvmWord,
     ) -> StorageOp {
         StorageOp {
             rw,
@@ -292,8 +291,8 @@ impl StorageOp {
         &self.value_prev
     }
 
-    /// Returns the [`BigUint`] storage key used by this operation.
-    pub const fn storage_key(&self) -> &BigUint {
+    /// Returns the underlying value representation.
+    pub const fn storage_key(&self) -> &EvmWord {
         &self.storage_key
     }
 }
@@ -498,7 +497,7 @@ mod operation_tests {
             RW::WRITE,
             GlobalCounter(1usize),
             MemoryAddress(usize::from(0x40u8)),
-            EvmWord::from(0x40u8),
+            0x40u8,
         );
 
         let memory_op_as_operation = Operation::from(memory_op.clone());
