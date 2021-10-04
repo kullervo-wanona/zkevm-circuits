@@ -11,19 +11,34 @@ pub use exec_step::ExecutionStep;
 pub(crate) use parsing::ParsedExecutionStep;
 use pasta_curves::arithmetic::FieldExt;
 use std::convert::TryFrom;
+use serde::Serialize;
+use num::BigUint;
 
 /// Definition of all of the constants related to an Ethereum block and
 /// therefore, related with an [`ExecutionTrace`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BlockConstants<F: FieldExt> {
     hash: EvmWord, // Until we know how to deal with it
+    #[serde(serialize_with = "serialize_fp")]
     coinbase: F,
+    #[serde(serialize_with = "serialize_fp")]
     timestamp: F,
+    #[serde(serialize_with = "serialize_fp")]
     number: F,
+    #[serde(serialize_with = "serialize_fp")]
     difficulty: F,
+    #[serde(serialize_with = "serialize_fp")]
     gas_limit: F,
+    #[serde(serialize_with = "serialize_fp")]
     chain_id: F,
+    #[serde(serialize_with = "serialize_fp")]
     base_fee: F,
+}
+
+fn serialize_fp<S, F>(v: &F, serializer: S) -> Result<S::Ok, S::Error>
+    where S: serde::Serializer, F: FieldExt
+{
+    serializer.serialize_str(&BigUint::from_bytes_le(&v.to_bytes()).to_str_radix(10))
 }
 
 impl<F: FieldExt> BlockConstants<F> {
@@ -87,6 +102,12 @@ impl<F: FieldExt> BlockConstants<F> {
     }
 
     #[inline]
+    /// Set the gas_limit of a block.
+    pub fn set_gas_limit(&mut self, new_gas_limit: F) {
+        self.gas_limit = new_gas_limit;
+    }
+
+    #[inline]
     /// Return the chain ID associated to a block.
     pub fn chain_id(&self) -> &F {
         &self.chain_id
@@ -139,6 +160,19 @@ impl<F: FieldExt> IndexMut<usize> for ExecutionTrace<F> {
 
 impl<F: FieldExt> ExecutionTrace<F> {
     /// Given an EVM trace in JSON format according to the specs and format
+    /// shown in [zkevm-test-vectors crate](https://github.com/appliedzkp/zkevm-testing-vectors),
+    /// generate the execution steps.
+    pub fn load_execution_steps<T: AsRef<[u8]>>(
+        bytes: T,
+    ) -> Result<Vec<ExecutionStep>, Error> {
+        serde_json::from_slice::<Vec<ParsedExecutionStep>>(bytes.as_ref())
+            .map_err(|_| Error::SerdeError)?
+            .iter()
+            .map(ExecutionStep::try_from)
+            .collect::<Result<Vec<ExecutionStep>, Error>>()
+    }
+
+    /// Given an EVM trace in JSON format according to the specs and format
     /// shown in [zkevm-test-vectors crate](https://github.com/appliedzkp/zkevm-testing-vectors), generate an `ExecutionTrace`
     /// and generate all of the [`Operation`]s associated to each one of it's
     /// [`ExecutionStep`]s filling them bus-mapping instances.
@@ -146,13 +180,7 @@ impl<F: FieldExt> ExecutionTrace<F> {
         bytes: T,
         block_ctants: BlockConstants<F>,
     ) -> Result<ExecutionTrace<F>, Error> {
-        let trace_loaded =
-            serde_json::from_slice::<Vec<ParsedExecutionStep>>(bytes.as_ref())
-                .map_err(|_| Error::SerdeError)?
-                .iter()
-                .map(ExecutionStep::try_from)
-                .collect::<Result<Vec<ExecutionStep>, Error>>()?;
-
+        let trace_loaded = Self::load_execution_steps(bytes)?;
         ExecutionTrace::<F>::new(trace_loaded, block_ctants)
     }
 
@@ -313,68 +341,61 @@ mod trace_tests {
         },
         exec_trace::ExecutionStep,
         operation::{StackOp, RW},
+        bytecode,
+        bytecode::Bytecode,
     };
+
+    macro_rules! gas_info {
+        ($gas:ident, $gas_cost: ident) => {{
+            GasInfo {
+                gas: {let temp = $gas; $gas -= GasCost::$gas_cost.as_usize() as u64; temp},
+                gas_cost: GasCost::$gas_cost,
+            }
+        }};
+    }
 
     #[test]
     fn exec_trace_parsing() {
-        let input_trace = r#"
-        [
-            {
-                "pc": 5,
-                "op": "PUSH1",
-                "gas": 82,
-                "gasCost": 3,
-                "depth": 1,
-                "stack": [],
-                "memory": [
-                  "0000000000000000000000000000000000000000000000000000000000000000",
-                  "0000000000000000000000000000000000000000000000000000000000000000",
-                  "0000000000000000000000000000000000000000000000000000000000000080"
-                ]
-              },
-              {
-                "pc": 7,
-                "op": "MLOAD",
-                "gas": 79,
-                "gasCost": 3,
-                "depth": 1,
-                "stack": [
-                  "40"
-                ],
-                "memory": [
-                  "0000000000000000000000000000000000000000000000000000000000000000",
-                  "0000000000000000000000000000000000000000000000000000000000000000",
-                  "0000000000000000000000000000000000000000000000000000000000000080"
-                ]
-              },
-              {
-                "pc": 8,
-                "op": "STOP",
-                "gas": 76,
-                "gasCost": 0,
-                "depth": 1,
-                "stack": [
-                  "80"
-                ],
-                "memory": [
-                  "0000000000000000000000000000000000000000000000000000000000000000",
-                  "0000000000000000000000000000000000000000000000000000000000000000",
-                  "0000000000000000000000000000000000000000000000000000000000000080"
-                ]
-              }
-        ]
-        "#;
+        let code = bytecode! {
+            // Setup memory
+            PUSH1 0x80u64;
+            PUSH1 0x40u64;
+            MSTORE;
 
-        let block_ctants = BlockConstants::new(
+            // Start byte code tested
+            [test]
+            PUSH1 0x40u64;
+            MLOAD;
+        };
+
+        let mut block_ctants = BlockConstants::new(
             EvmWord::from(0u8),
             pasta_curves::Fp::zero(),
             pasta_curves::Fp::zero(),
             pasta_curves::Fp::zero(),
             pasta_curves::Fp::zero(),
-            pasta_curves::Fp::zero(),
+            pasta_curves::Fp::from_u64(1000),
             pasta_curves::Fp::zero(),
             pasta_curves::Fp::zero(),
         );
+
+        // Get the execution steps from geth
+        let steps = &ExecutionTrace::<pasta_curves::Fp>::load_execution_steps(
+            geth_utils::trace(
+                &serde_json::to_string(&block_ctants).unwrap(),
+                code.to_bytes(),
+            ).unwrap().as_bytes(),
+        ).unwrap()[code.get_pos("test")..];
+
+        // Start from the same gas limit for the simulation
+        let mut gas = steps[0].gas_info().gas;
+        block_ctants.set_gas_limit(pasta_curves::Fp::from_u64(gas as u64));
+
+        // Obtained trace computation
+        let obtained_exec_trace = ExecutionTrace::<pasta_curves::Fp>::new(
+            steps.to_vec(),
+            block_ctants.clone()
+        ).expect("Error on trace generation");
 
         // Generate the expected ExecutionTrace corresponding to the JSON
         // provided above.
@@ -391,14 +412,12 @@ mod trace_tests {
         ]);
 
         // Generate Step1 corresponding to PUSH1 40
+
         let mut step_1 = ExecutionStep {
             memory: mem_map.clone(),
             stack: Stack::empty(),
             instruction: OpcodeId::PUSH1,
-            gas_info: GasInfo {
-                gas: 82,
-                gas_cost: GasCost::from(3u8),
-            },
+            gas_info: gas_info!(gas, FASTEST),
             depth: 1u8,
             pc: ProgramCounter::from(5),
             gc: GlobalCounter::from(0),
@@ -420,10 +439,7 @@ mod trace_tests {
             memory: mem_map.clone(),
             stack: Stack(vec![EvmWord::from(0x40u8)]),
             instruction: OpcodeId::MLOAD,
-            gas_info: GasInfo {
-                gas: 79,
-                gas_cost: GasCost::from(3u8),
-            },
+            gas_info: gas_info!(gas, FASTEST),
             depth: 1u8,
             pc: ProgramCounter::from(7),
             gc: GlobalCounter::from(1),
@@ -466,7 +482,7 @@ mod trace_tests {
             stack: Stack(vec![EvmWord::from(0x80u8)]),
             instruction: OpcodeId::STOP,
             gas_info: GasInfo {
-                gas: 76,
+                gas,
                 gas_cost: GasCost::from(0u8),
             },
             depth: 1u8,
@@ -480,13 +496,6 @@ mod trace_tests {
             block_ctants: block_ctants.clone(),
             container,
         };
-
-        // Obtained trace computation
-        let obtained_exec_trace = ExecutionTrace::from_trace_bytes(
-            input_trace.as_bytes(),
-            block_ctants,
-        )
-        .expect("Error on trace generation");
 
         assert_eq!(obtained_exec_trace, expected_exec_trace)
     }

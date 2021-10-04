@@ -74,6 +74,15 @@ impl_from_big_uint_wrappers!(
     (u8, u16, u32, u64, u128, usize)
 );
 
+impl Serialize for EvmWord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.as_big_uint().to_str_radix(10))
+    }
+}
+
 impl EvmWord {
     /// Return the little-endian byte representation of the word as a 32-byte
     /// array.

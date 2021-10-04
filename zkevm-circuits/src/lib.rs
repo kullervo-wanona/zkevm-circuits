@@ -12,10 +12,7 @@
 pub mod evm_circuit;
 pub mod gadget;
 pub mod state_circuit;
-pub mod tracer;
 pub mod util;
-#[macro_use]
-pub mod bytecode;
 
 #[cfg(test)]
 mod test_vectors;

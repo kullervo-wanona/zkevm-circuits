@@ -124,7 +124,7 @@
 //! Assume we have the following trace:
 //! ```text,ignore
 //! pc  op              stack (top -> down)                  memory
-//! --  --------------  ----------------------------------   ---------------------------------------  
+//! --  --------------  ----------------------------------   ---------------------------------------
 //! ...
 //! 53  JUMPDEST        [    ,          ,           ,    ]   {40: 80,  80:          ,  a0:         }
 //! 54  PUSH1 40        [    ,          ,           ,  40]   {40: 80,  80:          ,  a0:         }
@@ -145,7 +145,7 @@
 //! 83  MSTORE          [    ,          ,           ,  80]   {40: 80,  80: 1d97c6efb,  a0: cafeb0ba}
 //! 84  POP             [    ,          ,           ,    ]   {40: 80,  80: 1d97c6efb,  a0: cafeb0ba}
 //! ...
-//! ```                   
+//! ```
 //!
 //! Once you have the trace built (following the code found above) you can
 //! basically:
@@ -176,7 +176,7 @@
 //! each `ExecutionStep`'s is formed by and check which Stack/Memory&Storage operations are linked to each step.
 //! This is also automatically done via the
 //! [`Opcode`](crate::evm::opcodes::Opcode) trait defined in this crate.
-//!  
+//!
 //! ## Documentation
 //! For extra documentation, check the book with the specs written for the
 //! entire ZK-EVM solution.
@@ -201,6 +201,8 @@ pub(crate) mod macros;
 pub mod evm;
 pub mod exec_trace;
 pub mod operation;
+#[macro_use]
+pub mod bytecode;
 pub use error::Error;
 pub use exec_trace::{BlockConstants, ExecutionStep, ExecutionTrace};
 /// Gas is exported as a type alias for u64
