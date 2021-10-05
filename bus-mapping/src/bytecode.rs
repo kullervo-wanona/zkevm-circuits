@@ -83,13 +83,20 @@ impl Bytecode {
 
     /// Insert marker
     pub fn insert_marker(&mut self, marker: &String, pos: usize) {
-        assert!(!self.markers.contains_key(marker), "marker already used: {}", marker);
+        assert!(
+            !self.markers.contains_key(marker),
+            "marker already used: {}",
+            marker
+        );
         self.markers.insert(marker.clone(), pos);
     }
 
     /// Get the position of a marker
     pub fn get_pos(&self, marker: &str) -> usize {
-        *self.markers.get(&marker.to_string()).expect(format!("marker '{}' not found", marker).as_str())
+        *self
+            .markers
+            .get(&marker.to_string())
+            .expect(format!("marker '{}' not found", marker).as_str())
     }
 }
 
@@ -110,17 +117,13 @@ macro_rules! bytecode_internal {
     ($code:ident, ) => {};
     // Default opcode without any inputs
     ($code:ident, $x:ident; $($rest:tt)*) => {{
+        assert!(!crate::evm::OpcodeId::$x.is_push(), "invalid push");
         $code.write_op(crate::evm::OpcodeId::$x);
         crate::bytecode_internal!($code, $($rest)*);
     }};
     // PUSHX op codes
     ($code:ident, $x:ident $v: expr; $($rest:tt)*) => {{
-        let opcode_id = crate::evm::OpcodeId::$x.as_u8();
-        assert!(
-            crate::evm::OpcodeId::PUSH1.as_u8() <= opcode_id
-                && opcode_id <= crate::evm::OpcodeId::PUSH32.as_u8(),
-            "invalid push"
-        );
+        assert!(crate::evm::OpcodeId::$x.is_push(), "invalid push");
         let n = crate::evm::OpcodeId::$x.as_u8()
             - crate::evm::OpcodeId::PUSH1.as_u8()
             + 1;

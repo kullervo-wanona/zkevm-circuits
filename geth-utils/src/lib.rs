@@ -20,12 +20,7 @@ pub fn trace(config: &str, code: Vec<u8>) -> Result<String, ()> {
     let c_code = unsafe { CString::from_vec_unchecked(code) };
     let go_config = to_go_string(&c_config);
     let go_code = to_go_string(&c_code);
-    let result = unsafe {
-         CreateTrace(
-            go_config,
-            go_code
-        )
-    };
+    let result = unsafe { CreateTrace(go_config, go_code) };
     let c_str = unsafe { CStr::from_ptr(result) };
     let string = c_str
         .to_str()

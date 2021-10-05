@@ -8,11 +8,11 @@ use crate::operation::{MemoryOp, StackOp, StorageOp, Target};
 use crate::Error;
 use core::ops::{Index, IndexMut};
 pub use exec_step::ExecutionStep;
+use num::BigUint;
 pub(crate) use parsing::ParsedExecutionStep;
 use pasta_curves::arithmetic::FieldExt;
-use std::convert::TryFrom;
 use serde::Serialize;
-use num::BigUint;
+use std::convert::TryFrom;
 
 /// Definition of all of the constants related to an Ethereum block and
 /// therefore, related with an [`ExecutionTrace`].
@@ -36,9 +36,12 @@ pub struct BlockConstants<F: FieldExt> {
 }
 
 fn serialize_fp<S, F>(v: &F, serializer: S) -> Result<S::Ok, S::Error>
-    where S: serde::Serializer, F: FieldExt
+where
+    S: serde::Serializer,
+    F: FieldExt,
 {
-    serializer.serialize_str(&BigUint::from_bytes_le(&v.to_bytes()).to_str_radix(10))
+    serializer
+        .serialize_str(&BigUint::from_bytes_le(&v.to_bytes()).to_str_radix(10))
 }
 
 impl<F: FieldExt> BlockConstants<F> {
@@ -333,22 +336,26 @@ impl OperationRef {
 #[cfg(test)]
 mod trace_tests {
     use super::*;
-    use crate::evm::{Memory, Stack};
+    use crate::evm::Stack;
     use crate::{
+        bytecode,
+        bytecode::Bytecode,
         evm::{
             opcodes::ids::OpcodeId, GasCost, GasInfo, GlobalCounter,
             ProgramCounter, StackAddress,
         },
         exec_trace::ExecutionStep,
         operation::{StackOp, RW},
-        bytecode,
-        bytecode::Bytecode,
     };
 
     macro_rules! gas_info {
         ($gas:ident, $gas_cost: ident) => {{
             GasInfo {
-                gas: {let temp = $gas; $gas -= GasCost::$gas_cost.as_usize() as u64; temp},
+                gas: {
+                    let temp = $gas;
+                    $gas -= GasCost::$gas_cost.as_usize() as u64;
+                    temp
+                },
                 gas_cost: GasCost::$gas_cost,
             }
         }};
@@ -363,20 +370,20 @@ mod trace_tests {
             MSTORE;
 
             // Start byte code tested
-            [test]
+            [start]
             PUSH1 0x40u64;
             MLOAD;
         };
 
         let mut block_ctants = BlockConstants::new(
             EvmWord::from(0u8),
-            pasta_curves::Fp::zero(),
-            pasta_curves::Fp::zero(),
-            pasta_curves::Fp::zero(),
-            pasta_curves::Fp::zero(),
-            pasta_curves::Fp::from_u64(1000),
-            pasta_curves::Fp::zero(),
-            pasta_curves::Fp::zero(),
+            pasta_curves::Fp::from_u64(0xc014ba5eu64),
+            pasta_curves::Fp::from_u64(1633398551u64),
+            pasta_curves::Fp::from_u64(123456u64),
+            pasta_curves::Fp::from_u64(0x200000u64),
+            pasta_curves::Fp::from_u64(100u64),
+            pasta_curves::Fp::one(),
+            pasta_curves::Fp::from_u64(97u64),
         );
 
         // Get the execution steps from geth
@@ -384,8 +391,11 @@ mod trace_tests {
             geth_utils::trace(
                 &serde_json::to_string(&block_ctants).unwrap(),
                 code.to_bytes(),
-            ).unwrap().as_bytes(),
-        ).unwrap()[code.get_pos("test")..];
+            )
+            .unwrap()
+            .as_bytes(),
+        )
+        .unwrap()[code.get_pos("start")..];
 
         // Start from the same gas limit for the simulation
         let mut gas = steps[0].gas_info().gas;
@@ -394,8 +404,9 @@ mod trace_tests {
         // Obtained trace computation
         let obtained_exec_trace = ExecutionTrace::<pasta_curves::Fp>::new(
             steps.to_vec(),
-            block_ctants.clone()
-        ).expect("Error on trace generation");
+            block_ctants.clone(),
+        )
+        .expect("Error on trace generation");
 
         // Generate the expected ExecutionTrace corresponding to the JSON
         // provided above.
@@ -405,11 +416,7 @@ mod trace_tests {
 
         // The memory is the same in both steps as none of them touches the
         // memory of the EVM.
-        let mem_map = Memory(vec![
-            EvmWord::from(0u8),
-            EvmWord::from(0u8),
-            EvmWord::from(0x80u8),
-        ]);
+        let mem_map = steps[0].memory.clone();
 
         // Generate Step1 corresponding to PUSH1 40
 

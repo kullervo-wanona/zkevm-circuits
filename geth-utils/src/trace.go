@@ -84,10 +84,6 @@ func TraceTx(toAddress common.Address, calldata []byte, config *runtime.Config, 
 
 	_, _, err = runtime.Call(toAddress, nil, config)
 
-	if err != nil {
-		return nil, errors.Wrap(err, "transaction fails")
-	}
-
 	return FormatLogs(tracer.StructLogs()), nil
 }
 
