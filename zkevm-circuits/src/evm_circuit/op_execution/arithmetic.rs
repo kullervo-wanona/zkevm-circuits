@@ -100,6 +100,7 @@ impl<F: FieldExt> OpGadget<F> for AddGadget<F> {
                     - (state_curr.stack_pointer.expr() + 1.expr()),
                 state_next.gas_counter.expr()
                     - (state_curr.gas_counter.expr() + GasCost::FASTEST.expr()),
+                state_next.memory_size.expr() - state_curr.memory_size.expr(),
             ];
 
             let AddSuccessAllocation {
@@ -153,17 +154,17 @@ impl<F: FieldExt> OpGadget<F> for AddGadget<F> {
                 Lookup::BusMappingLookup(BusMappingLookup::Stack {
                     index_offset: 0.expr(),
                     value: a.expr(),
-                    is_write: false,
+                    is_write: false.expr(),
                 }),
                 Lookup::BusMappingLookup(BusMappingLookup::Stack {
                     index_offset: 1.expr(),
                     value: swap.expr() * c.expr() + no_swap.clone() * b.expr(),
-                    is_write: false,
+                    is_write: false.expr(),
                 }),
                 Lookup::BusMappingLookup(BusMappingLookup::Stack {
                     index_offset: 1.expr(),
                     value: swap.expr() * b.expr() + no_swap * c.expr(),
-                    is_write: true,
+                    is_write: true.expr(),
                 }),
             ];
 
@@ -302,7 +303,7 @@ mod test {
         ($execution_steps:expr, $operations:expr, $result:expr) => {{
             let circuit =
                 TestCircuit::<Base>::new($execution_steps, $operations);
-            let prover = MockProver::<Base>::run(10, &circuit, vec![]).unwrap();
+            let prover = MockProver::<Base>::run(11, &circuit, vec![]).unwrap();
             assert_eq!(prover.verify(), $result);
         }};
     }

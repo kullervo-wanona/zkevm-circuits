@@ -7,8 +7,6 @@ use crate::util::Expr;
 use halo2::plonk::Error;
 use halo2::{arithmetic::FieldExt, circuit::Region};
 
-pub const STACK_START_IDX: usize = 1024;
-
 #[derive(Clone, Debug)]
 pub(crate) struct OutOfGasCase<F> {
     case_selector: Cell<F>,
@@ -102,7 +100,7 @@ impl<F: FieldExt> StackUnderflowCase<F> {
         name: &'static str,
     ) -> Constraint<F> {
         let set = (0..self.num_popped)
-            .map(|i| (STACK_START_IDX - i).expr())
+            .map(|i| (super::STACK_START_IDX - i).expr())
             .collect();
         let mut cb = ConstraintBuilder::default();
         cb.require_in_set(state_curr.stack_pointer.expr(), set);

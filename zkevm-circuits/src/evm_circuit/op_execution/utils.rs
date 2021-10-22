@@ -9,6 +9,18 @@ use halo2::{arithmetic::FieldExt, plonk::Expression};
 pub(crate) mod common_cases;
 pub(crate) mod constraint_builder;
 pub(crate) mod math_gadgets;
+pub(crate) mod memory_gadgets;
+
+pub const STACK_START_IDX: usize = 1024;
+pub const MAX_SIZE_GAS_IN_BYTES: usize = 8;
+// Number of bytes that will be used of the address word.
+// If any of the other more signficant bytes are used it will
+// always result in an out-of-gas error.
+pub const NUM_ADDRESS_BYTES_USED: usize = 5;
+pub const MAX_MEMORY_SIZE_IN_BYTES: usize = 5;
+
+type Address = u64;
+type MemorySize = u64;
 
 // Makes sure all state transition variables are always constrained.
 // This makes it impossible for opcodes to forget to constrain
@@ -21,6 +33,7 @@ pub(crate) struct StateTransitions<F> {
     pub sp_delta: Option<Expression<F>>,
     pub pc_delta: Option<Expression<F>>,
     pub gas_delta: Option<Expression<F>>,
+    pub next_memory_size: Option<Expression<F>>,
 }
 
 impl<F: FieldExt> StateTransitions<F> {
@@ -53,6 +66,14 @@ impl<F: FieldExt> StateTransitions<F> {
             state_next.gas_counter.expr()
                 - (state_curr.gas_counter.expr()
                     + self.gas_delta.clone().unwrap_or_else(|| 0.expr())),
+        );
+        // Memory size
+        cb.add_expression(
+            state_next.memory_size.expr()
+                - (self
+                    .next_memory_size
+                    .clone()
+                    .unwrap_or_else(|| state_curr.memory_size.expr())),
         );
     }
 }
@@ -129,6 +150,37 @@ pub(crate) mod select {
     ) -> F {
         selector * when_true + (F::one() - selector) * when_false
     }
+}
+
+/// Decodes a field element from its byte representation
+pub(crate) mod from_bytes {
+    use crate::{evm_circuit::Cell, util::Expr};
+    use halo2::{arithmetic::FieldExt, plonk::Expression};
+
+    pub(crate) fn expr<F: FieldExt>(bytes: Vec<Cell<F>>) -> Expression<F> {
+        let mut multiplier = 1.expr();
+        let mut value = 0.expr();
+        for byte in bytes.iter() {
+            value = value + byte.expr() * multiplier.clone();
+            multiplier = multiplier * 256.expr();
+        }
+        value
+    }
+
+    pub(crate) fn value<F: FieldExt>(bytes: Vec<u8>) -> F {
+        let mut value = F::from_u64(0);
+        let mut multiplier = F::from_u64(1);
+        for byte in bytes.iter() {
+            value += F::from_u64(*byte as u64) * multiplier;
+            multiplier *= F::from_u64(256);
+        }
+        value
+    }
+}
+
+/// Returns 2**num_bits
+pub(crate) fn get_range<F: FieldExt>(num_bits: usize) -> F {
+    F::from_u64(2).pow(&[num_bits as u64, 0, 0, 0])
 }
 
 /// Counts the number of repetitions

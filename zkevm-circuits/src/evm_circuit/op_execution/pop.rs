@@ -78,6 +78,8 @@ impl<F: FieldExt> OpGadget<F> for PopGadget<F> {
                 op_execution_state_next.gas_counter.expr()
                     - (op_execution_state_curr.gas_counter.expr()
                         + GasCost::QUICK.expr()),
+                op_execution_state_next.memory_size.expr()
+                    - op_execution_state_curr.memory_size.expr(),
             ];
 
             let case_selector = &self.success;
@@ -191,7 +193,7 @@ mod test {
         ($execution_steps:expr, $operations:expr, $result:expr) => {{
             let circuit =
                 TestCircuit::<Base>::new($execution_steps, $operations);
-            let prover = MockProver::<Base>::run(10, &circuit, vec![]).unwrap();
+            let prover = MockProver::<Base>::run(11, &circuit, vec![]).unwrap();
             assert_eq!(prover.verify(), $result);
         }};
     }

@@ -77,6 +77,7 @@ impl<F: FieldExt> PcSuccessCase<F> {
             sp_delta: Some(SP_DELTA.expr()),
             pc_delta: Some(PC_DELTA.expr()),
             gas_delta: Some(GAS.expr()),
+            ..utils::StateTransitions::default()
         }
         .constraints(&mut cb, state_curr, state_next);
 
@@ -94,7 +95,7 @@ impl<F: FieldExt> PcSuccessCase<F> {
         core_state.global_counter += 1;
         core_state.program_counter += 1;
         core_state.stack_pointer -= 1;
-        core_state.gas_counter += GasCost::QUICK.as_usize();
+        core_state.gas_counter += GasCost::QUICK.as_u64();
 
         self.pc.assign(
             region,
@@ -120,7 +121,7 @@ mod test {
         ($execution_steps:expr, $operations:expr, $result:expr) => {{
             let circuit =
                 TestCircuit::<Base>::new($execution_steps, $operations);
-            let prover = MockProver::<Base>::run(10, &circuit, vec![]).unwrap();
+            let prover = MockProver::<Base>::run(11, &circuit, vec![]).unwrap();
             assert_eq!(prover.verify(), $result);
         }};
     }

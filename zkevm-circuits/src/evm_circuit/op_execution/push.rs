@@ -127,6 +127,7 @@ impl<F: FieldExt> OpGadget<F> for PushGadget<F> {
                     - (state_curr.stack_pointer.expr() - 1.expr()),
                 state_next.gas_counter.expr()
                     - (state_curr.gas_counter.expr() + GasCost::FASTEST.expr()),
+                state_next.memory_size.expr() - state_curr.memory_size.expr(),
             ];
 
             let PushSuccessAllocation {
@@ -162,7 +163,7 @@ impl<F: FieldExt> OpGadget<F> for PushGadget<F> {
                 [vec![Lookup::BusMappingLookup(BusMappingLookup::Stack {
                     index_offset: (-1).expr(),
                     value: word.expr(),
-                    is_write: true,
+                    is_write: true.expr(),
                 })]]
                 .concat();
 
@@ -279,7 +280,7 @@ mod test {
         ($execution_steps:expr, $operations:expr, $result:expr) => {{
             let circuit =
                 TestCircuit::<Base>::new($execution_steps, $operations);
-            let prover = MockProver::<Base>::run(10, &circuit, vec![]).unwrap();
+            let prover = MockProver::<Base>::run(11, &circuit, vec![]).unwrap();
             assert_eq!(prover.verify(), $result);
         }};
     }

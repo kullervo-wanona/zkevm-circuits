@@ -44,17 +44,31 @@ impl Opcode for Mload {
             stack_position,
             stack_value_read,
         );
-
         exec_step
             .bus_mapping_instance_mut()
             .push(container.insert(stack_read));
 
-        //
-        // First mem read -> 32 MemoryOp generated.
-        //
+        // Read the memory value
         let mut mem_read_addr: MemoryAddress = stack_value_read.try_into()?;
         let mem_read_value = next_steps[0].memory().read_word(mem_read_addr)?;
 
+        //
+        // First stack write
+        //
+        gc_idx += 1;
+        let stack_write = StackOp::new(
+            RW::WRITE,
+            gc_idx.into(),
+            stack_position,
+            mem_read_value,
+        );
+        exec_step
+            .bus_mapping_instance_mut()
+            .push(container.insert(stack_write));
+
+        //
+        // First mem read -> 32 MemoryOp generated.
+        //
         mem_read_value.inner().iter().for_each(|value_byte| {
             // Update next GC index
             gc_idx += 1;
@@ -74,20 +88,6 @@ impl Opcode for Mload {
             // Update mem_read_addr to next byte's one
             mem_read_addr += MemoryAddress::from(1);
         });
-
-        //
-        // First stack write
-        //
-        gc_idx += 1;
-        let stack_write = StackOp::new(
-            RW::WRITE,
-            gc_idx.into(),
-            stack_position,
-            mem_read_value,
-        );
-        exec_step
-            .bus_mapping_instance_mut()
-            .push(container.insert(stack_write));
 
         Ok(MLOAD_OP_NUM)
     }
@@ -163,6 +163,16 @@ mod mload_tests {
                 EvmWord::from(0x40u8),
             )));
 
+        // Add the last Stack write
+        step_1
+            .bus_mapping_instance_mut()
+            .push(container.insert(StackOp::new(
+                RW::WRITE,
+                advance_gc!(gc),
+                StackAddress::from(1023),
+                EvmWord::from(0x80u8),
+            )));
+
         // Add the 32 MemoryOp generated from the Memory read at addr 0x40<->0x80 for each byte.
         EvmWord::from(0x80u8)
             .inner()
@@ -174,16 +184,6 @@ mod mload_tests {
                     MemoryOp::new(RW::READ, advance_gc!(gc), idx.into(), *byte),
                 ));
             });
-
-        // Add the last Stack write
-        step_1
-            .bus_mapping_instance_mut()
-            .push(container.insert(StackOp::new(
-                RW::WRITE,
-                advance_gc!(gc),
-                StackAddress::from(1023),
-                EvmWord::from(0x80u8),
-            )));
 
         // Generate Step1 corresponding to PUSH1 40
         let step_2 = ExecutionStep {

@@ -161,6 +161,7 @@ impl<F: FieldExt> SignextendSuccessCase<F> {
             sp_delta: Some(SP_DELTA.expr()),
             pc_delta: Some(PC_DELTA.expr()),
             gas_delta: Some(GAS.expr()),
+            ..utils::StateTransitions::default()
         }
         .constraints(&mut cb, state_curr, state_next);
 
@@ -221,7 +222,7 @@ impl<F: FieldExt> SignextendSuccessCase<F> {
         state.global_counter += GC_DELTA;
         state.program_counter += PC_DELTA;
         state.stack_pointer += SP_DELTA;
-        state.gas_counter += GAS.as_usize();
+        state.gas_counter += GAS.as_u64();
 
         Ok(())
     }
@@ -241,7 +242,7 @@ mod test {
         ($execution_steps:expr, $operations:expr, $result:expr) => {{
             let circuit =
                 TestCircuit::<Base>::new($execution_steps, $operations);
-            let prover = MockProver::<Base>::run(10, &circuit, vec![]).unwrap();
+            let prover = MockProver::<Base>::run(11, &circuit, vec![]).unwrap();
             assert_eq!(prover.verify(), $result);
         }};
     }
