@@ -183,6 +183,7 @@ impl<F: FieldExt, const NUM_BYTES: usize> ConstantDivisionGadget<F, NUM_BYTES> {
             self.quotient.expr() * self.divisor.expr(),
         );
 
+        // Return the quotient and the remainder
         (self.quotient.expr(), self.remainder.expr())
     }
 
@@ -239,7 +240,7 @@ impl<F: FieldExt, const NUM_BYTES: usize> ComparisonGadget<F, NUM_BYTES> {
         lhs: Expression<F>,
         rhs: Expression<F>,
     ) -> Expression<F> {
-        let diff = utils::from_bytes::expr(self.diff[0..NUM_BYTES].to_vec());
+        let diff = utils::from_bytes::expr(self.diff.to_vec());
         // The comparison equation that needs to hold.
         cb.require_equal(lhs, rhs + diff - (self.lt.expr() * self.range));
 
