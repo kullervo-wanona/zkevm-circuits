@@ -624,9 +624,17 @@ impl<F: FieldExt> OpExecutionGadget<F> {
                 (_, _, _, OpcodeId::SIGNEXTEND) => self
                     .signextend_gadget
                     .assign(region, offset, core_state, execution_step)?,
-                (_, _, _, OpcodeId::MLOAD | OpcodeId::MSTORE) => self
-                    .memory_gadget
-                    .assign(region, offset, core_state, execution_step)?,
+                (
+                    _,
+                    _,
+                    _,
+                    OpcodeId::MLOAD | OpcodeId::MSTORE | OpcodeId::MSTORE8,
+                ) => self.memory_gadget.assign(
+                    region,
+                    offset,
+                    core_state,
+                    execution_step,
+                )?,
                 _ => unimplemented!(),
             }
         }

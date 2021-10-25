@@ -98,6 +98,7 @@ pub(crate) enum BusMappingLookup<F> {
         call_id: Expression<F>,
         index: Expression<F>,
         value: Expression<F>,
+        gc_offset: Expression<F>,
     },
     AccountStorage {
         is_write: bool,
@@ -564,16 +565,15 @@ impl<F: FieldExt> EvmCircuit<F> {
                                 .push(vec![0.expr(); 7].try_into().unwrap());
                         }
 
-                        let mut exprs = vec![
-                            global_counter.expr() + rw_lookup_count.expr(),
-                            rw_lookup.rw_target().expr(),
-                        ];
-                        exprs.extend(match rw_lookup {
+                        let rw_target = rw_lookup.rw_target().expr();
+                        let exprs = vec![match rw_lookup {
                             BusMappingLookup::Stack {
                                 is_write,
                                 index_offset,
                                 value,
                             } => [
+                                global_counter.expr() + rw_lookup_count.expr(),
+                                rw_target,
                                 is_write,
                                 call_id.expr(),
                                 stack_pointer.expr() + index_offset,
@@ -585,7 +585,16 @@ impl<F: FieldExt> EvmCircuit<F> {
                                 call_id,
                                 index,
                                 value,
-                            } => [is_write, call_id, index, value, 0.expr()],
+                                gc_offset,
+                            } => [
+                                global_counter.expr() + gc_offset,
+                                rw_target,
+                                is_write,
+                                call_id,
+                                index,
+                                value,
+                                0.expr(),
+                            ],
                             BusMappingLookup::AccountStorage {
                                 is_write,
                                 address,
@@ -593,6 +602,8 @@ impl<F: FieldExt> EvmCircuit<F> {
                                 value,
                                 value_prev,
                             } => [
+                                global_counter.expr() + rw_lookup_count.expr(),
+                                rw_target,
                                 is_write.expr(),
                                 address,
                                 location,
@@ -601,7 +612,8 @@ impl<F: FieldExt> EvmCircuit<F> {
                             ],
                             // TODO:
                             _ => unimplemented!(),
-                        });
+                        }]
+                        .concat();
 
                         for (acc, expr) in
                             rw_lookups[rw_lookup_count].iter_mut().zip(exprs)

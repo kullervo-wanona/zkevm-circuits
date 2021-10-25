@@ -12,6 +12,7 @@ pub struct ConstraintBuilder<F> {
     pub expressions: Vec<Expression<F>>,
     pub(crate) lookups: Vec<Lookup<F>>,
     pub stack_offset: i32,
+    pub gc_offset: usize,
     pub call_id: Option<Expression<F>>,
     pub max_degree: usize,
 }
@@ -34,6 +35,7 @@ impl<F: FieldExt> ConstraintBuilder<F> {
             expressions: vec![],
             lookups: vec![],
             stack_offset: 0,
+            gc_offset: 0,
             call_id,
             max_degree,
         }
@@ -108,47 +110,30 @@ impl<F: FieldExt> ConstraintBuilder<F> {
             value,
             is_write,
         }));
+        self.gc_offset += 1;
     }
 
     // Memory
 
-    pub(crate) fn memory_write(
-        &mut self,
-        address: Expression<F>,
-        bytes: Vec<Expression<F>>,
-    ) {
-        self.memory_lookup(address, bytes, true.expr())
-    }
-
-    pub(crate) fn memory_read(
-        &mut self,
-        address: Expression<F>,
-        bytes: Vec<Expression<F>>,
-    ) {
-        self.memory_lookup(address, bytes, false.expr());
-    }
-
     pub(crate) fn memory_lookup(
         &mut self,
+        gc_offset: Expression<F>,
         address: Expression<F>,
-        bytes: Vec<Expression<F>>,
+        byte: Expression<F>,
         is_write: Expression<F>,
     ) {
         self.validate_lookup_expression(&self.call_id.clone().unwrap());
+        self.validate_lookup_expression(&gc_offset);
         self.validate_lookup_expression(&address);
+        self.validate_lookup_expression(&byte);
         self.validate_lookup_expression(&is_write);
-        for idx in 0..bytes.len() {
-            self.validate_lookup_expression(&bytes[idx]);
-            self.add_lookup(Lookup::BusMappingLookup(
-                BusMappingLookup::Memory {
-                    call_id: self.call_id.clone().unwrap(),
-                    index: address.clone()
-                        + Expression::Constant(F::from_u64(idx as u64)),
-                    value: bytes[bytes.len() - 1 - idx].clone(),
-                    is_write: is_write.clone(),
-                },
-            ));
-        }
+        self.add_lookup(Lookup::BusMappingLookup(BusMappingLookup::Memory {
+            call_id: self.call_id.clone().unwrap(),
+            index: address,
+            value: byte,
+            is_write,
+            gc_offset,
+        }));
     }
 
     // Validation
