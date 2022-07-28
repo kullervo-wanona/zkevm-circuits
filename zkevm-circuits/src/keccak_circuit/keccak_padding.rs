@@ -115,10 +115,10 @@ impl<F: Field> KeccakPaddingConfig<F> {
                 constraints.push(("begin with 1", (s_i - s_i_1) * (d_bit_0 - 1u64.expr())));
 
                 //  COMMENT FROM BRECHT: No need for constraints I think, can just do these thinks directly on cb. For example
-                let s_padding_start = s_i - s_i_1;
-                cb.condition(s_padding_start, |cb| {
-                    cb.require_equal(d_bit_0, 1u64.expr());
-                });
+                // let s_padding_start = s_i - s_i_1;
+                // cb.condition(s_padding_start, |cb| {
+                //     cb.require_equal(d_bit_0, 1u64.expr());
+                // });
             }
             let s_last = meta.query_advice(s_flags[s_flags.len() - 1], Rotation::cur());
             let d_last = meta.query_advice(d_bits[KECCAK_RATE - 1], Rotation::cur());
