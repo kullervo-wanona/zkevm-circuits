@@ -9,5 +9,5 @@ pub mod keccak_packed;
 /// Keccak packed multi
 pub mod keccak_packed_multi;
 
-/// Keccak padding
-pub mod keccak_padding;
+/// Keccak padding byte based
+pub mod keccak_padding_byte;
