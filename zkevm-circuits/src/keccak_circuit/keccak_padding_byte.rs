@@ -37,7 +37,7 @@ fn get_degree() -> usize {
 #[derive(Debug, Clone)]
 #[allow(missing_docs)]
 pub struct PaddingCombinationsConfig<F> {
-    pub byte_range_col: TableColumn,
+    pub byte_col: TableColumn,
     pub is_padding_col: TableColumn,
     _marker: PhantomData<F>,
 }
@@ -46,7 +46,7 @@ impl<F: Field> PaddingCombinationsConfig<F> {
 
     pub(crate) fn configure(meta: &mut ConstraintSystem<F>) -> Self {
         Self {
-            byte_range_col: meta.lookup_table_column(),
+            byte_col: meta.lookup_table_column(),
             is_padding_col: meta.lookup_table_column(),
             _marker: PhantomData,
         }
@@ -55,31 +55,37 @@ impl<F: Field> PaddingCombinationsConfig<F> {
     pub(crate) fn load(&self, layouter: &mut impl Layouter<F>) -> Result<(), Error> {
         const K: u64 = 256;
         layouter.assign_table(
-            // The table will estrict padding flags to {0,1} and data/padding bytes to [0, 255].
-            // Only particular combinations are allowed, i.e. data sections are restricted to (0, [0, 255]), 
-            // and padding sections to {(1, 0), (1, 128), (1, 129), (1, 1)}.
-            || "byte-s_flag combination table",
+            // The table will restrict padding flags to {0,1} and data/padding bytes to [0, 255].
+            // Only particular combinations are allowed,
+            // (is_padding_col, byte_col)
+            // 0 | [all 256 possible byte values]
+            // 1 | 128 // start-exclusive
+            // 1 | 129 // start-end
+            // 1 | 0 // mid
+            // 1 | 1 // end-exclusive
+
+            || "byte-is_pad combination table",
             |mut table| {
                 for i in 0..K {
-                    table.assign_cell(|| "byte_range_col_[i=0:K-1]", self.byte_range_col, i as usize, || Ok(F::from(i)))?;
+                    table.assign_cell(|| "byte_col_[i=0:K-1]", self.byte_col, i as usize, || Ok(F::from(i)))?;
                     table.assign_cell(|| "is_padding_col_[i=0:K-1]", self.is_padding_col, i as usize, || Ok(F::from(0)))?;
                 }
                 
-                // byte = 0, s_flag = 1, the middle of the padding case
-                table.assign_cell(|| "byte_range_col_[i=K]", self.byte_range_col, (K) as usize, || Ok(F::from(0)))?;
+                // byte = 0, is_pad = 1, the middle of the padding case
+                table.assign_cell(|| "byte_col_[i=K]", self.byte_col, (K) as usize, || Ok(F::from(0)))?;
                 table.assign_cell(|| "is_padding_col_[i=K]", self.is_padding_col, (K) as usize, || Ok(F::from(1)))?;
 
-                // byte = 128, s_flag = 1, the beginning of the padding separate from end case
-                table.assign_cell(|| "byte_range_col_[i=K+1]", self.byte_range_col, (K + 1) as usize, || Ok(F::from(128)))?;
+                // byte = 128, is_pad = 1, the beginning of the padding separate from end case
+                table.assign_cell(|| "byte_col_[i=K+1]", self.byte_col, (K + 1) as usize, || Ok(F::from(128)))?;
                 table.assign_cell(|| "is_padding_col_[i=K+1]", self.is_padding_col, (K + 1) as usize, || Ok(F::from(1)))?;
             
-                // byte = 129, s_flag = 1, the beginning of the padding same as end case
-                table.assign_cell(|| "byte_range_col_[i=K+1]", self.byte_range_col, (K + 2) as usize, || Ok(F::from(129)))?;
-                table.assign_cell(|| "is_padding_col_[i=K+1]", self.is_padding_col, (K + 2) as usize, || Ok(F::from(1)))?;
+                // byte = 129, is_pad = 1, the beginning of the padding same as end case
+                table.assign_cell(|| "byte_col_[i=K+2]", self.byte_col, (K + 2) as usize, || Ok(F::from(129)))?;
+                table.assign_cell(|| "is_padding_col_[i=K+2]", self.is_padding_col, (K + 2) as usize, || Ok(F::from(1)))?;
 
-                // byte = 1, s_flag = 1, the end of the padding separate from beginning case
-                table.assign_cell(|| "byte_range_col_[i=K+1]", self.byte_range_col, (K + 3) as usize, || Ok(F::from(1)))?;
-                table.assign_cell(|| "is_padding_col_[i=K+1]", self.is_padding_col, (K + 3) as usize, || Ok(F::from(1)))?;
+                // byte = 1, is_pad = 1, the end of the padding separate from beginning case
+                table.assign_cell(|| "byte_col_[i=K+3]", self.byte_col, (K + 3) as usize, || Ok(F::from(1)))?;
+                table.assign_cell(|| "is_padding_col_[i=K+3]", self.is_padding_col, (K + 3) as usize, || Ok(F::from(1)))?;
 
                 Ok(())
             },
@@ -121,13 +127,12 @@ impl<F: Field> KeccakPaddingConfig<F> {
         
         // Check that (padding flag, data/padding byte) combinations are restricted to the combinations in padding_combinations_table.        
         // The table will estrict padding flags to {0,1} and data/padding bytes to [0, 255].
-        // Only particular combinations are allowed, i.e. data sections are restricted to (0, [0, 255]), 
-        // and padding sections to {(1, 0), (1, 128), (1, 129), (1, 1)}.
+        // Only particular combinations are allowed, check PaddingCombinationsConfig load method comments.
         for i in 0..is_pads.len() {
             meta.lookup("Check allowed data/padding/flag combinations", |meta| {
                 // let q_enable = meta.query_selector(q_enable);
                 vec![
-                    (meta.query_advice(d_bytes[i], Rotation::cur()), padding_combinations_table.byte_range_col),
+                    (meta.query_advice(d_bytes[i], Rotation::cur()), padding_combinations_table.byte_col),
                     (meta.query_advice(is_pads[i], Rotation::cur()), padding_combinations_table.is_padding_col),
                 ]
             });
@@ -139,26 +144,26 @@ impl<F: Field> KeccakPaddingConfig<F> {
             let q_end = virt_cells.query_advice(q_end, Rotation::cur());
             let d_last_byte = virt_cells.query_advice(d_bytes[is_pads.len() - 1], Rotation::cur());
 
-            let s_last = virt_cells.query_advice(is_pads[is_pads.len() - 1], Rotation::cur());
-            let s_last_prev = virt_cells.query_advice(is_pads[is_pads.len() - 2], Rotation::cur());
+            let is_pad_last = virt_cells.query_advice(is_pads[is_pads.len() - 1], Rotation::cur());
+            let is_pad_last_prev = virt_cells.query_advice(is_pads[is_pads.len() - 2], Rotation::cur());
             
-            let s_last_separate = s_last.clone() * s_last_prev.clone(); 
-            let s_last_same = s_last.clone() * not::expr(s_last_prev.clone());
+            let is_start_end_separate = is_pad_last.clone() * is_pad_last_prev.clone(); 
+            let is_start_end_same = is_pad_last.clone() * not::expr(is_pad_last_prev.clone());
 
             // Ensure that if q_end is true (last data or padding block to be sent to the hash function), 
             // the last padding flag is 1 and zero otherwise.)
             // Everything cascades from this condition.
-            cb.require_equal("s_last == q_end", s_last.clone(), q_end.clone());
+            cb.require_equal("is_pad_last == q_end", is_pad_last.clone(), q_end.clone());
 
-            // Based on the value of s_last_separate, which is 1 if the last two padding flags are 1, 
+            // Based on the value of is_start_end_separate, which is 1 if the last two padding flags are 1, 
             // constrain the last data+padding byte to 1. 
-            cb.condition(s_last_separate.clone(), |cb| {
+            cb.condition(is_start_end_separate.clone(), |cb| {
                 cb.require_equal("Check d_bytes padding start-end separate", d_last_byte.clone(), 1u64.expr());
             });
 
-            // Based on the value of s_last_same, which is 1 if the last two padding flags are (0, 1), 
+            // Based on the value of is_start_end_same, which is 1 if the last two padding flags are (0, 1), 
             // constrain the last data+padding byte to 129. 
-            cb.condition(s_last_same.clone(), |cb| {
+            cb.condition(is_start_end_same.clone(), |cb| {
                 cb.require_equal("Check d_bytes padding start-end the same", d_last_byte.clone(), 129u64.expr());
             });
 
@@ -177,14 +182,14 @@ impl<F: Field> KeccakPaddingConfig<F> {
                 // this ensures that padding flags are [0]*[1]*, zeroes followed by ones.
                 cb.require_boolean("Check that padding flags are monotonically non-decreasing.", s_padding_step.clone());
                 
-                // Based on the value of s_last_same and s_last_separate, we go through each element and 
+                // Based on the value of is_start_end_same and is_start_end_separate, we go through each element and 
                 // detect if there is a step function change in the padding flags, and constrain the respective
                 // byte to 129 or 128 respectively. 
-                cb.condition(s_padding_step.clone() * s_last_separate.clone(), |cb| {
+                cb.condition(s_padding_step.clone() * is_start_end_separate.clone(), |cb| {
                     cb.require_equal("Check d_bytes padding start", d_bytes_i.clone(), 128u64.expr());
                 });
 
-                cb.condition(s_padding_step.clone() * s_last_same.clone(), |cb| {
+                cb.condition(s_padding_step.clone() * is_start_end_same.clone(), |cb| {
                     cb.require_equal("Check d_bytes padding start", d_bytes_i.clone(), 129u64.expr());
                 });
                 
@@ -284,12 +289,12 @@ impl<F: Field> KeccakPaddingConfig<F> {
             )?;
         }
 
-        for (idx, (s_flag, column)) in is_pads.iter().zip(self.is_pads.iter()).enumerate() {
+        for (idx, (is_pad, column)) in is_pads.iter().zip(self.is_pads.iter()).enumerate() {
             region.assign_advice(
-                || format!("assign input data select flag {} {}", idx, offset),
+                || format!("assign pad flag {} {}", idx, offset),
                 *column,
                 offset,
-                || Ok(F::from(*s_flag as u64)),
+                || Ok(F::from(*is_pad as u64)),
             )?;
         }
 
@@ -505,9 +510,9 @@ mod tests {
             output.d_bytes[KECCAK_RATE_IN_BYTES - 1] = 1;
         }
        
-        println!("{:?}", output.is_pads);
-        println!("{:?}", output.d_lens);
-        println!("{:?}", output.d_bytes);
+        println!("is_pads: {:?}", output.is_pads);
+        println!("d_lens: {:?}", output.d_lens);
+        println!("d_bytes: {:?}", output.d_bytes);
         println!("Padding start: {:?}", output.d_bytes[data_len_offset_usize]);
         println!("Padding end: {:?}", output.d_bytes[KECCAK_RATE_IN_BYTES - 1]);
         println!("END");
