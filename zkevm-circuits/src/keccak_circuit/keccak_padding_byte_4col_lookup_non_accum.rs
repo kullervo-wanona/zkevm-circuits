@@ -1,6 +1,6 @@
 use crate::{
     evm_circuit::{
-        util::{constraint_builder::BaseConstraintBuilder},
+        util::{constraint_builder::BaseConstraintBuilder, select},
     },
     util::Expr,
 };
@@ -8,7 +8,7 @@ use crate::{
 use eth_types::Field;
 use gadgets::util::not;
 use halo2_proofs::{
-    circuit::{Layouter, Region, SimpleFloorPlanner},
+    circuit::{Layouter, Region, SimpleFloorPlanner, Table},
     plonk::{
         Advice, Circuit, Column, ConstraintSystem, Error, Selector, TableColumn,
     },
@@ -28,7 +28,6 @@ fn get_degree() -> usize {
         .parse()
         .expect("Cannot parse DEGREE env var as usize")
 }
-
 
 // [is_pads]          0 (data)   0 (data)  (pad) 1   (pad) 1  (pad) 1
 // [is_pad_starts]    0 (data)   0 (data)  (pad) 1   (pad) 0  (pad) 0
@@ -59,6 +58,19 @@ impl<F: Field> PaddingCombinationsConfig<F> {
         }
     }
 
+    pub(crate) fn assign_table_row(&self, mut table: Table<'_, F>, row_id: usize, 
+                                   byte_val: u64, is_pad_val: u64, 
+                                   is_pad_start_val: u64, is_pad_end_val: u64, 
+                                  ) -> Result<(), Error> {
+
+        table.assign_cell(|| format!("byte_col_[row={}]", row_id), self.byte_col, row_id, || Ok(F::from(byte_val)))?;
+        table.assign_cell(|| format!("is_padding_col_[row={}]", row_id), self.is_padding_col, row_id, || Ok(F::from(is_pad_val)))?;
+        table.assign_cell(|| format!("is_padding_start_col_[row={}]", row_id), self.is_padding_start_col, row_id, || Ok(F::from(is_pad_start_val)))?;
+        table.assign_cell(|| format!("is_padding_end_col_[row={}]", row_id), self.is_padding_end_col, row_id, || Ok(F::from(is_pad_end_val)))?;
+
+        Ok(())
+    }
+
     pub(crate) fn load(&self, layouter: &mut impl Layouter<F>) -> Result<(), Error> {
         const K: u64 = 256;
         layouter.assign_table(
@@ -70,34 +82,40 @@ impl<F: Field> PaddingCombinationsConfig<F> {
             // 1 | 0 | 0 | 0 // mid
             // 1 | 0 | 1 | 1 // end-exclusive
 
-            || "byte-is_pad-is_pad_start-is_pad_end combination table",
-            |mut table| {
+            || "is_pad-is_pad_start-is_pad_end-data combination table",
+            |mut table: Table<'_, F>| {
                 for i in 0..K {
+                    //// byte = [0, 255], is_pad = 0, actual input data
+                    // self.assign_table_row(table, i as usize, i, 0, 0, 0);
                     table.assign_cell(|| "byte_col_[i=0:K-1]", self.byte_col, i as usize, || Ok(F::from(i)))?;
                     table.assign_cell(|| "is_padding_col_[i=0:K-1]", self.is_padding_col, i as usize, || Ok(F::from(0)))?;
                     table.assign_cell(|| "is_padding_start_col_[i=0:K-1]", self.is_padding_start_col, i as usize, || Ok(F::from(0)))?;
                     table.assign_cell(|| "is_padding_end_col_[i=0:K-1]", self.is_padding_end_col, i as usize, || Ok(F::from(0)))?;
                 }
                 
-                // the middle of the padding case
+                //// the middle of the padding case
+                // self.assign_table_row(table, K as usize, 0, 1, 0, 0);
                 table.assign_cell(|| "byte_col_[i=K]", self.byte_col, (K) as usize, || Ok(F::from(0)))?;
                 table.assign_cell(|| "is_padding_col_[i=K]", self.is_padding_col, (K) as usize, || Ok(F::from(1)))?;
                 table.assign_cell(|| "is_padding_start_col_[i=K]", self.is_padding_start_col, (K) as usize, || Ok(F::from(0)))?;
                 table.assign_cell(|| "is_padding_end_col_[i=K]", self.is_padding_end_col, (K) as usize, || Ok(F::from(0)))?;
 
-                // the beginning of the padding separate from end case
+                //////the beginning of the padding separate from end case
+                // self.assign_table_row(table, (K + 1) as usize, 128, 1, 1, 0);
                 table.assign_cell(|| "byte_col_[i=K+1]", self.byte_col, (K + 1) as usize, || Ok(F::from(128)))?;
                 table.assign_cell(|| "is_padding_col_[i=K+1]", self.is_padding_col, (K + 1) as usize, || Ok(F::from(1)))?;
                 table.assign_cell(|| "is_padding_start_col_[i=K+1]", self.is_padding_start_col, (K + 1) as usize, || Ok(F::from(1)))?;
                 table.assign_cell(|| "is_padding_end_col_[i=K+1]", self.is_padding_end_col, (K + 1) as usize, || Ok(F::from(0)))?;
 
-                // the beginning/end of the padding same as end/beginning case
+                //// the beginning/end of the padding same as end/beginning case
+                // self.assign_table_row(table, (K + 2) as usize, 129, 1, 1, 1);
                 table.assign_cell(|| "byte_col_[i=K+2]", self.byte_col, (K + 2) as usize, || Ok(F::from(129)))?;
                 table.assign_cell(|| "is_padding_col_[i=K+2]", self.is_padding_col, (K + 2) as usize, || Ok(F::from(1)))?;
                 table.assign_cell(|| "is_padding_start_col_[i=K+2]", self.is_padding_start_col, (K + 2) as usize, || Ok(F::from(1)))?;
                 table.assign_cell(|| "is_padding_end_col_[i=K+2]", self.is_padding_end_col, (K + 2) as usize, || Ok(F::from(1)))?;
 
-                // the end of the padding separate from beginning case
+                //// the end of the padding separate from beginning case
+                // self.assign_table_row(table, (K + 3) as usize, 1, 1, 0, 1);
                 table.assign_cell(|| "byte_col_[i=K+3]", self.byte_col, (K + 3) as usize, || Ok(F::from(1)))?;
                 table.assign_cell(|| "is_padding_col_[i=K+3]", self.is_padding_col, (K + 3) as usize, || Ok(F::from(1)))?;
                 table.assign_cell(|| "is_padding_start_col_[i=K+3]", self.is_padding_start_col, (K + 3) as usize, || Ok(F::from(0)))?;
@@ -163,68 +181,58 @@ impl<F: Field> KeccakPaddingConfig<F> {
         meta.create_gate("Check inter-cell relationships for data/padding/flag", |virt_cells| {
             let mut cb = BaseConstraintBuilder::new(5);
             
-            // ?? IMPLEMENT THIS PART. SEEMS A BIT MORE COMPLICATED COMPARED TO keccak_padding_byte VERSION.
+            let q_end = virt_cells.query_advice(q_end, Rotation::cur());
+            let is_pad_last = virt_cells.query_advice(is_pads[is_pads.len() - 1], Rotation::cur());
 
-            // let q_end = virt_cells.query_advice(q_end, Rotation::cur());
-            // let d_last_byte = virt_cells.query_advice(d_bytes[is_pads.len() - 1], Rotation::cur());
+            // Ensure that if q_end is true (last data or padding block to be sent to the hash function), 
+            // the last padding flag is 1 and zero otherwise.)
+            // Everything cascades from this condition.
+            cb.require_equal("is_pad_last == q_end", is_pad_last.clone(), q_end.clone());
 
-            // let is_pad_last = virt_cells.query_advice(is_pads[is_pads.len() - 1], Rotation::cur());
-            // let is_pad_last_prev = virt_cells.query_advice(is_pads[is_pads.len() - 2], Rotation::cur());
-            
-            // let is_start_end_separate = is_pad_last.clone() * is_pad_last_prev.clone(); 
-            // let is_start_end_same = is_pad_last.clone() * not::expr(is_pad_last_prev.clone());
+            // This is where most of the constraints are effectuated for the padding flags.
+            // If the flag constraints are satisfied, there is no need to check data/padding bytes as that is relegated to the lookup.
+            for i in 0..is_pads.len() {
+                let is_pad_curr = virt_cells.query_advice(is_pads[i], Rotation::cur());
+                let is_pad_start_curr = virt_cells.query_advice(is_pad_starts[i], Rotation::cur());
+                let is_pad_end_curr = virt_cells.query_advice(is_pad_ends[i], Rotation::cur());
 
-            // // Ensure that if q_end is true (last data or padding block to be sent to the hash function), 
-            // // the last padding flag is 1 and zero otherwise.)
-            // // Everything cascades from this condition.
-            // cb.require_equal("is_pad_last == q_end", is_pad_last.clone(), q_end.clone());
+                let mut is_pad_prev = 0u64.expr();
+                if i > 0 {
+                    is_pad_prev = virt_cells.query_advice(is_pads[i - 1], Rotation::cur());
+                }
+                let is_padding_step = is_pad_curr.clone() - is_pad_prev.clone();
 
-            // // Based on the value of is_start_end_separate, which is 1 if the last two padding flags are 1, 
-            // // constrain the last data+padding byte to 1. 
-            // cb.condition(is_start_end_separate.clone(), |cb| {
-            //     cb.require_equal("Check d_bytes padding start-end separate", d_last_byte.clone(), 1u64.expr());
-            // });
-
-            // // Based on the value of is_start_end_same, which is 1 if the last two padding flags are (0, 1), 
-            // // constrain the last data+padding byte to 129. 
-            // cb.condition(is_start_end_same.clone(), |cb| {
-            //     cb.require_equal("Check d_bytes padding start-end the same", d_last_byte.clone(), 129u64.expr());
-            // });
-
-            // // This is where most of the constraints are effectuated for the padding flags and data/padding bytes. 
-            // for i in 0..is_pads.len() {
-            //     let d_bytes_i = virt_cells.query_advice(d_bytes[i], Rotation::cur());
-            //     let s_i = virt_cells.query_advice(is_pads[i], Rotation::cur());
-            
-            //     let mut s_i_1 = 0u64.expr();
-            //     if i > 0 {
-            //         s_i_1 = virt_cells.query_advice(is_pads[i - 1], Rotation::cur());
-            //     }
-            //     let s_padding_step = s_i.clone() - s_i_1.clone();
-
-            //     // First, we enforce monotonicity to the padding flags. Combined with the table restrictions, 
-            //     // this ensures that padding flags are [0]*[1]*, zeroes followed by ones.
-            //     cb.require_boolean("Check that padding flags are monotonically non-decreasing.", s_padding_step.clone());
+                // First, we enforce monotonicity to the padding flags. Combined with the table restrictions, 
+                // this ensures that padding flags are [0]*[1]*, zeroes followed by ones.
+                cb.require_boolean("Check that padding flags are monotonically non-decreasing.", is_padding_step.clone());
                 
-            //     // Based on the value of is_start_end_same and is_start_end_separate, we go through each element and 
-            //     // detect if there is a step function change in the padding flags, and constrain the respective
-            //     // byte to 129 or 128 respectively. 
-            //     cb.condition(s_padding_step.clone() * is_start_end_separate.clone(), |cb| {
-            //         cb.require_equal("Check d_bytes padding start", d_bytes_i.clone(), 128u64.expr());
-            //     });
+                // We ensure that is_padding_start_col is 1 only if the is_pad_prev is 0. 
+                // Through this, 1 | 1 | 0 and 1 | 1 | 1 are constrained to the beginning of the padding
+                // and visa versa (due to non-decreasing is_pads). 
+                // 1 | 0 | 0 or 1 | 0 | 1 cannot be in the first padding element.
+                if i > 0 {
+                    cb.condition(is_pad_start_curr.clone(), |cb| {
+                        cb.require_equal("Check prev element is not padding if is_pad_start_curr is 1", is_pad_prev.clone(), 0u64.expr());
+                    });
+                }
 
-            //     cb.condition(s_padding_step.clone() * is_start_end_same.clone(), |cb| {
-            //         cb.require_equal("Check d_bytes padding start", d_bytes_i.clone(), 129u64.expr());
-            //     });
-                
-            //     // Further if there is no step function change and the padding flag is 1, then we are in the intermediate
-            //     // regions of the padding, and therefore need to constrain the respective byte to zero (except last element). 
-            //     if i < (is_pads.len() - 1) {
-            //         cb.condition(not::expr(s_padding_step.clone()) * s_i.clone(), |cb| {
-            //             cb.require_equal("Check d_bytes padding intermediate", d_bytes_i.clone(), 0u64.expr());
-            //         });
-            //     }
-            // }    
+                // We ensure that is_padding_end_col is 1 for the last element and 0s otherwise. 
+                // Through this, 1 | 0 | 1 and 1 | 1 | 1 are constrained to the last element and visa versa. 
+                // 1 | 0 | 0 or 1 | 1 | 0 cannot be in the last element.
+                if i < (is_pads.len() - 1) {
+                    cb.require_equal("Check is_pad_end is 0 for the non-last elements", is_pad_end_curr.clone(), 0u64.expr());
+                } else {
+                    cb.require_equal("Check is_pad_end is 1 for the last element", is_pad_end_curr.clone(), 1u64.expr());
+                }
+
+                // The above conditions in combination ensure that 1 | 0 | 0 only appear in the middle of the padding
+                // if the padding length is greater than one. If the padding size is one, then that last element is 1 | 1 | 1,
+                // since that is the only way to satisfy both constraints above. For example consider the case of two 
+                // 1 | 1 | 1 ---- 1 | 1 | 1 back to back. Then "Check is_pad_end is 1 for the last element" will be satisfied but,
+                // "Check prev element is not padding if is_pad_start_curr is 1" cannot be satisfied for the last element.
+                // Constraints work together to eliminate the bad cases.
+
+            }    
             cb.gate(virt_cells.query_selector(q_enable))
         });
 
@@ -232,20 +240,21 @@ impl<F: Field> KeccakPaddingConfig<F> {
             let mut cb = BaseConstraintBuilder::new(5);
 
             for i in 1..is_pads.len() {
-                let s_i = virt_cells.query_advice(is_pads[i], Rotation::cur());
-                let d_len_i = virt_cells.query_advice(d_lens[i], Rotation::cur());
-                let d_len_i_1 = virt_cells.query_advice(d_lens[i - 1], Rotation::cur());                
-                let d_bytes_i = virt_cells.query_advice(d_bytes[i], Rotation::cur());
-                let rlc_i = virt_cells.query_advice(d_rlcs[i], Rotation::cur());
-                let rlc_i_1 = virt_cells.query_advice(d_rlcs[i - 1], Rotation::cur());
+                let is_pad_curr = virt_cells.query_advice(is_pads[i], Rotation::cur());
+                let d_len_curr = virt_cells.query_advice(d_lens[i], Rotation::cur());
+                let d_len_prev = virt_cells.query_advice(d_lens[i - 1], Rotation::cur());                
+                let d_byte_curr = virt_cells.query_advice(d_bytes[i], Rotation::cur());
+                let rlc_curr = virt_cells.query_advice(d_rlcs[i], Rotation::cur());
+                let rlc_prev = virt_cells.query_advice(d_rlcs[i - 1], Rotation::cur());
                 let r = virt_cells.query_advice(randomness, Rotation::cur());
 
                 // Check that d_len elements are increasing by one if they do not correspond to padding 
-                cb.require_equal("d_len[i] = d_len[i-1] + !s_i", d_len_i.clone(), d_len_i_1.clone() + not::expr(s_i.clone()));
+                cb.require_equal("d_len[i] = d_len[i-1] + !s_i", d_len_curr.clone(), d_len_prev.clone() + not::expr(is_pad_curr.clone()));
 
                 // Check that rlc elements are changing properly if they do not correspond to padding 
-                cb.require_equal("rlc[i] = rlc[i-1]*r if s == 0 else rlc[i]", rlc_i.clone(), 
-                    s_i.clone() * rlc_i.clone() + not::expr(s_i.clone()) * (rlc_i_1.clone() * r.clone() + d_bytes_i.clone()));
+                cb.require_equal("rlc[i] = rlc[i-1]*r if s == 0 else rlc[i]", rlc_curr.clone(), 
+                select::expr(is_pad_curr.clone(), rlc_curr.clone(), rlc_prev.clone() * r.clone() + d_byte_curr.clone()));
+            
             }
 
             cb.gate(virt_cells.query_selector(q_enable))
