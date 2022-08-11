@@ -38,16 +38,16 @@ fn get_degree() -> usize {
 #[allow(missing_docs)]
 pub struct PaddingCombinationsConfig<F> {
     pub byte_col: TableColumn,
-    pub is_padding_col: TableColumn,
+    pub is_pad_col: TableColumn,
     _marker: PhantomData<F>,
 }
 
 impl<F: Field> PaddingCombinationsConfig<F> {
 
-    pub(crate) fn configure(meta: &mut ConstraintSystem<F>) -> Self {
+    pub(crate) fn configure(cs: &mut ConstraintSystem<F>) -> Self {
         Self {
-            byte_col: meta.lookup_table_column(),
-            is_padding_col: meta.lookup_table_column(),
+            byte_col: cs.lookup_table_column(),
+            is_pad_col: cs.lookup_table_column(),
             _marker: PhantomData,
         }
     }
@@ -57,7 +57,7 @@ impl<F: Field> PaddingCombinationsConfig<F> {
                                   ) -> Result<(), Error> {
         
         table.assign_cell(|| format!("byte_col_[row={}]", row_id), self.byte_col, row_id, || Ok(F::from(byte_val)))?;
-        table.assign_cell(|| format!("is_padding_col_[row={}]", row_id), self.is_padding_col, row_id, || Ok(F::from(is_pad_val)))?;
+        table.assign_cell(|| format!("is_pad_col_[row={}]", row_id), self.is_pad_col, row_id, || Ok(F::from(is_pad_val)))?;
         
         Ok(())
     }
@@ -66,7 +66,7 @@ impl<F: Field> PaddingCombinationsConfig<F> {
         layouter.assign_table(
             // The table will restrict padding flags to {0,1} and data/padding bytes to [0, 255].
             // Only particular combinations are allowed,
-            // (is_padding_col, byte_col)
+            // (is_pad_col, byte_col)
             // 0 | [all 256 possible byte values]
             // 1 | 128 // start-exclusive
             // 1 | 129 // start-end
@@ -79,28 +79,28 @@ impl<F: Field> PaddingCombinationsConfig<F> {
                     //// byte = [0, 255], is_pad = 0, actual input data
                     // self.assign_table_row(table, i as usize, i, 0);
                     table.assign_cell(|| "byte_col_[i=0:K-1]", self.byte_col, i as usize, || Ok(F::from(i)))?;
-                    table.assign_cell(|| "is_padding_col_[i=0:K-1]", self.is_padding_col, i as usize, || Ok(F::from(0)))?;
+                    table.assign_cell(|| "is_pad_col_[i=0:K-1]", self.is_pad_col, i as usize, || Ok(F::from(0)))?;
                 }
                 
                 //// byte = 0, is_pad = 1, the middle of the padding case
                 // self.assign_table_row(table, K as usize, 0, 1);
                 table.assign_cell(|| "byte_col_[i=K]", self.byte_col, (K) as usize, || Ok(F::from(0)))?;
-                table.assign_cell(|| "is_padding_col_[i=K]", self.is_padding_col, (K) as usize, || Ok(F::from(1)))?;
+                table.assign_cell(|| "is_pad_col_[i=K]", self.is_pad_col, (K) as usize, || Ok(F::from(1)))?;
 
                 //// byte = 128, is_pad = 1, the beginning of the padding separate from end case
                 // self.assign_table_row(table, (K + 1) as usize, 128, 1);
                 table.assign_cell(|| "byte_col_[i=K+1]", self.byte_col, (K + 1) as usize, || Ok(F::from(128)))?;
-                table.assign_cell(|| "is_padding_col_[i=K+1]", self.is_padding_col, (K + 1) as usize, || Ok(F::from(1)))?;
+                table.assign_cell(|| "is_pad_col_[i=K+1]", self.is_pad_col, (K + 1) as usize, || Ok(F::from(1)))?;
             
                 //// byte = 129, is_pad = 1, the beginning of the padding same as end case
                 // self.assign_table_row(table, (K + 2) as usize, 129, 1);
                 table.assign_cell(|| "byte_col_[i=K+2]", self.byte_col, (K + 2) as usize, || Ok(F::from(129)))?;
-                table.assign_cell(|| "is_padding_col_[i=K+2]", self.is_padding_col, (K + 2) as usize, || Ok(F::from(1)))?;
+                table.assign_cell(|| "is_pad_col_[i=K+2]", self.is_pad_col, (K + 2) as usize, || Ok(F::from(1)))?;
 
                 //// byte = 1, is_pad = 1, the end of the padding separate from beginning case
                 // self.assign_table_row(table, (K + 3) as usize, 1, 1);
                 table.assign_cell(|| "byte_col_[i=K+3]", self.byte_col, (K + 3) as usize, || Ok(F::from(1)))?;
-                table.assign_cell(|| "is_padding_col_[i=K+3]", self.is_padding_col, (K + 3) as usize, || Ok(F::from(1)))?;
+                table.assign_cell(|| "is_pad_col_[i=K+3]", self.is_pad_col, (K + 3) as usize, || Ok(F::from(1)))?;
 
                 Ok(())
             },
@@ -117,58 +117,66 @@ impl<F: Field> PaddingCombinationsConfig<F> {
 #[allow(missing_docs)]
 pub struct KeccakPaddingConfig<F> {
     q_enable: Selector,
-    q_end: Column<Advice>,
+    randomness: Column<Advice>,
+    acc_len: Column<Advice>,
+    acc_rlc: Column<Advice>,
+    is_pads: [Column<Advice>; KECCAK_RATE_IN_BYTES],
     d_bytes: [Column<Advice>; KECCAK_WIDTH_IN_BYTES],
     d_lens: [Column<Advice>; KECCAK_RATE_IN_BYTES],
     d_rlcs: [Column<Advice>; KECCAK_RATE_IN_BYTES],
-    is_pads: [Column<Advice>; KECCAK_RATE_IN_BYTES],
-    randomness: Column<Advice>,
     _marker: PhantomData<F>,
     padding_combinations_table: PaddingCombinationsConfig<F>,
 }
 
 impl<F: Field> KeccakPaddingConfig<F> {
-    pub(crate) fn configure(meta: &mut ConstraintSystem<F>) -> Self {
-        let randomness = meta.advice_column();        
-        let q_enable = meta.selector();
-        let q_end = meta.advice_column();
+    pub(crate) fn configure(cs: &mut ConstraintSystem<F>) -> Self {
+        let q_enable = cs.selector();
+        let padding_combinations_table = PaddingCombinationsConfig::<F>::configure(cs);
 
-        let padding_combinations_table = PaddingCombinationsConfig::<F>::configure(meta);
+        let randomness = cs.advice_column();        
+        let acc_len = cs.advice_column();        
+        let acc_rlc = cs.advice_column();        
+        let is_pads = [(); KECCAK_RATE_IN_BYTES].map(|_| cs.advice_column());
+        let d_bytes = [(); KECCAK_WIDTH_IN_BYTES].map(|_| cs.advice_column());
+        let d_lens = [(); KECCAK_RATE_IN_BYTES].map(|_| cs.advice_column());
+        let d_rlcs = [(); KECCAK_RATE_IN_BYTES].map(|_| cs.advice_column());
 
-        let d_bytes = [(); KECCAK_WIDTH_IN_BYTES].map(|_| meta.advice_column());
-        let d_lens = [(); KECCAK_RATE_IN_BYTES].map(|_| meta.advice_column());
-        let d_rlcs = [(); KECCAK_RATE_IN_BYTES].map(|_| meta.advice_column());
-        let is_pads = [(); KECCAK_RATE_IN_BYTES].map(|_| meta.advice_column());
-        
+            
         // Check that (padding flag, data/padding byte) combinations are restricted to the combinations in padding_combinations_table.        
         // The table will estrict padding flags to {0,1} and data/padding bytes to [0, 255].
         // Only particular combinations are allowed, check PaddingCombinationsConfig load method comments.
         for i in 0..is_pads.len() {
-            meta.lookup("Check allowed data/padding/flag combinations", |meta| {
-                // let q_enable = meta.query_selector(q_enable);
+            cs.lookup("Check allowed data/padding/flag combinations", |virt_cells| {
+                let is_pad_curr =virt_cells.query_advice(is_pads[i], Rotation::cur());
+                let d_bytes_curr = virt_cells.query_advice(d_bytes[i], Rotation::cur());
+
+                // let q_enable = virt_cells.query_selector(q_enable);
+                // vec![
+                //     (q_enable.clone() * d_bytes_curr, padding_combinations_table.byte_col),
+                //     (q_enable.clone() * is_pad_curr, padding_combinations_table.is_pad_col),
+                // ]
                 vec![
-                    (meta.query_advice(d_bytes[i], Rotation::cur()), padding_combinations_table.byte_col),
-                    (meta.query_advice(is_pads[i], Rotation::cur()), padding_combinations_table.is_padding_col),
+                    (d_bytes_curr, padding_combinations_table.byte_col),
+                    (is_pad_curr, padding_combinations_table.is_pad_col),
                 ]
             });
         };
 
-        meta.create_gate("Check inter-cell relationships for data/padding/flag", |virt_cells| {
+        cs.create_gate("Check inter-cell relationships for data/padding/flag", |virt_cells| {
             let mut cb = BaseConstraintBuilder::new(5);
             
-            let q_end = virt_cells.query_advice(q_end, Rotation::cur());
-            let d_last_byte = virt_cells.query_advice(d_bytes[is_pads.len() - 1], Rotation::cur());
-
             let is_pad_last = virt_cells.query_advice(is_pads[is_pads.len() - 1], Rotation::cur());
             let is_pad_last_prev = virt_cells.query_advice(is_pads[is_pads.len() - 2], Rotation::cur());
             
             let is_start_end_separate = is_pad_last.clone() * is_pad_last_prev.clone(); 
             let is_start_end_same = is_pad_last.clone() * not::expr(is_pad_last_prev.clone());
 
-            // Ensure that if q_end is true (last data or padding block to be sent to the hash function), 
-            // the last padding flag is 1 and zero otherwise.)
-            // Everything cascades from this condition.
-            cb.require_equal("is_pad_last == q_end", is_pad_last.clone(), q_end.clone());
+            let d_last_byte = virt_cells.query_advice(d_bytes[is_pads.len() - 1], Rotation::cur());
+
+            // // Ensure that if q_end is true (last data or padding block to be sent to the hash function), 
+            // // the last padding flag is 1 and zero otherwise.)
+            // // Everything cascades from this condition.
+            // cb.require_equal("is_pad_last == q_end", is_pad_last.clone(), q_end.clone());
 
             // Based on the value of is_start_end_separate, which is 1 if the last two padding flags are 1, 
             // constrain the last data+padding byte to 1. 
@@ -219,25 +227,36 @@ impl<F: Field> KeccakPaddingConfig<F> {
             cb.gate(virt_cells.query_selector(q_enable))
         });
 
-        meta.create_gate("Check len and rlc inputs", |virt_cells| {
+        cs.create_gate("Check len and rlc inputs", |virt_cells| {
             let mut cb = BaseConstraintBuilder::new(5);
 
-            for i in 1..is_pads.len() {
-                let is_pad_curr = virt_cells.query_advice(is_pads[i], Rotation::cur());
-                let d_len_curr = virt_cells.query_advice(d_lens[i], Rotation::cur());
-                let d_len_prev = virt_cells.query_advice(d_lens[i - 1], Rotation::cur());                
-                let d_byte_curr = virt_cells.query_advice(d_bytes[i], Rotation::cur());
-                let rlc_curr = virt_cells.query_advice(d_rlcs[i], Rotation::cur());
-                let rlc_prev = virt_cells.query_advice(d_rlcs[i - 1], Rotation::cur());
+            let acc_len_prev = virt_cells.query_advice(acc_len, Rotation::cur());
+            let acc_rlc_prev = virt_cells.query_advice(acc_rlc, Rotation::cur());
+
+            for i in 0..is_pads.len() {
                 let r = virt_cells.query_advice(randomness, Rotation::cur());
 
-                // Check that d_len elements are increasing by one if they do not correspond to padding 
-                cb.require_equal("d_len[i] = d_len[i-1] + !s_i", d_len_curr.clone(), d_len_prev.clone() + not::expr(is_pad_curr.clone()));
+                let is_pad_curr = virt_cells.query_advice(is_pads[i], Rotation::cur());
+                let d_byte_curr = virt_cells.query_advice(d_bytes[i], Rotation::cur());
+                let d_len_curr = virt_cells.query_advice(d_lens[i], Rotation::cur());
+                let d_rlc_curr = virt_cells.query_advice(d_rlcs[i], Rotation::cur());
 
-                // Check that rlc elements are changing properly if they do not correspond to padding 
-                cb.require_equal("rlc[i] = rlc[i-1]*r if s == 0 else rlc[i]", rlc_curr.clone(), 
-                select::expr(is_pad_curr.clone(), rlc_curr.clone(), rlc_prev.clone() * r.clone() + d_byte_curr.clone()));
-            
+                if i == 0 {
+                    cb.require_equal("d_len[0] = acc_len_prev + !s_0", d_len_curr.clone(), acc_len_prev.clone() + not::expr(is_pad_curr.clone()));
+                    cb.require_equal("d_rlc[0] = acc_rlc_prev*r if s_0 == 0 else d_rlc[i]", d_rlc_curr.clone(), 
+                    select::expr(is_pad_curr.clone(), d_rlc_curr.clone(), acc_rlc_prev.clone() * r.clone() + d_byte_curr.clone()));
+
+                } else {
+                    let d_len_prev = virt_cells.query_advice(d_lens[i - 1], Rotation::cur());                
+                    let d_rlc_prev = virt_cells.query_advice(d_rlcs[i - 1], Rotation::cur());
+    
+                    // Check that d_len elements are increasing by one if they do not correspond to padding 
+                    cb.require_equal("d_len[i] = d_len[i-1] + !s_i", d_len_curr.clone(), d_len_prev.clone() + not::expr(is_pad_curr.clone()));
+
+                    // Check that rlc elements are changing properly if they do not correspond to padding 
+                    cb.require_equal("d_rlc[i] = d_rlc[i-1]*r if s == 0 else d_rlc[i]", d_rlc_curr.clone(), 
+                    select::expr(is_pad_curr.clone(), d_rlc_curr.clone(), d_rlc_prev.clone() * r.clone() + d_byte_curr.clone()));
+                } 
             }
 
             cb.gate(virt_cells.query_selector(q_enable))
@@ -245,12 +264,13 @@ impl<F: Field> KeccakPaddingConfig<F> {
 
         KeccakPaddingConfig {
             q_enable,
-            q_end,
+            randomness,
+            acc_len,
+            acc_rlc,
+            is_pads,
             d_bytes,
             d_lens,
             d_rlcs,
-            is_pads,
-            randomness,
             _marker: PhantomData,
             padding_combinations_table, 
         }
@@ -270,12 +290,13 @@ impl<F: Field> KeccakPaddingConfig<F> {
                 self.set_row(
                     &mut region,
                     0,
-                    keccak_padding_row.q_end,
+                    randomness,
+                    keccak_padding_row.acc_len,
+                    keccak_padding_row.acc_rlc,
+                    keccak_padding_row.is_pads,
                     keccak_padding_row.d_bytes,
                     keccak_padding_row.d_lens,
                     keccak_padding_row.d_rlcs,
-                    keccak_padding_row.is_pads,
-                    randomness,
                 )?;
                 Ok(())
             },
@@ -286,37 +307,58 @@ impl<F: Field> KeccakPaddingConfig<F> {
         &self,
         region: &mut Region<'_, F>,
         offset: usize,
-        q_end: u64,
+        randomness: F,
+        acc_len: u32,
+        acc_rlc: F,
+        is_pads: [bool; KECCAK_RATE_IN_BYTES],
         d_bytes: [u8; KECCAK_WIDTH_IN_BYTES],
         d_lens: [u32; KECCAK_RATE_IN_BYTES],
         d_rlcs: [F; KECCAK_RATE_IN_BYTES],
-        is_pads: [bool; KECCAK_RATE_IN_BYTES],
-        randomness: F,
     ) -> Result<(), Error> {
         self.q_enable.enable(region, offset)?;
 
-        // Input bytes w/ padding
-        for (idx, (byte, column)) in d_bytes.iter().zip(self.d_bytes.iter()).enumerate() {
-            region.assign_advice(
-                || format!("assign input data byte {} {}", idx, offset),
-                *column,
-                offset,
-                || Ok(F::from(*byte as u64)),
-            )?;
-        }
+        region.assign_advice(
+            || format!("assign randomness {}", offset),
+            self.randomness,
+            offset,
+            || Ok(randomness),
+        )?;
+
+        region.assign_advice(
+            || format!("assign acc_len {}", offset),
+            self.acc_len,
+            offset,
+            || Ok(F::from(acc_len as u64)),
+        )?;
+
+        region.assign_advice(
+            || format!("assign acc_rlc {}", offset),
+            self.acc_rlc,
+            offset,
+            || Ok(acc_rlc),
+        )?;
 
         for (idx, (is_pad, column)) in is_pads.iter().zip(self.is_pads.iter()).enumerate() {
             region.assign_advice(
-                || format!("assign pad flag {} {}", idx, offset),
+                || format!("assign is_pads {} {}", idx, offset),
                 *column,
                 offset,
                 || Ok(F::from(*is_pad as u64)),
             )?;
         }
 
+        for (idx, (byte, column)) in d_bytes.iter().zip(self.d_bytes.iter()).enumerate() {
+            region.assign_advice(
+                || format!("assign d_bytes {} {}", idx, offset),
+                *column,
+                offset,
+                || Ok(F::from(*byte as u64)),
+            )?;
+        }
+
         for (idx, (d_len, column)) in d_lens.iter().zip(self.d_lens.iter()).enumerate() {
             region.assign_advice(
-                || format!("assign input data len {} {}", idx, offset),
+                || format!("assign d_lens {} {}", idx, offset),
                 *column,
                 offset,
                 || Ok(F::from(*d_len as u64)),
@@ -325,26 +367,12 @@ impl<F: Field> KeccakPaddingConfig<F> {
 
         for (idx, (d_rlc, column)) in d_rlcs.iter().zip(self.d_rlcs.iter()).enumerate() {
             region.assign_advice(
-                || format!("assign input data rlc {} {}", idx, offset),
+                || format!("assign d_rlcs {} {}", idx, offset),
                 *column,
                 offset,
                 || Ok(*d_rlc),
             )?;
         }
-
-        region.assign_advice(
-            || format!("assign q_end{}", offset),
-            self.q_end,
-            offset,
-            || Ok(F::from(q_end)),
-        )?;
-
-        region.assign_advice(
-            || format!("assign randomness{}", offset),
-            self.randomness,
-            offset,
-            || Ok(randomness),
-        )?;
 
         Ok(())
     }
@@ -355,32 +383,15 @@ impl<F: Field> KeccakPaddingConfig<F> {
 //////////////////////////////////////////////////////////////////////////////////////////////////////////// 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////// 
 
+#[derive(Copy, Clone)]
 pub(crate) struct KeccakPaddingRow<F: Field> {
     pub(crate) randomness: F,
-    pub(crate) q_end: u64,
     pub(crate) acc_len: u32,
     pub(crate) acc_rlc: F,
+    pub(crate) is_pads: [bool; KECCAK_RATE_IN_BYTES],
     pub(crate) d_bytes: [u8; KECCAK_WIDTH_IN_BYTES],
     pub(crate) d_lens: [u32; KECCAK_RATE_IN_BYTES],
     pub(crate) d_rlcs: [F; KECCAK_RATE_IN_BYTES],
-    pub(crate) is_pads: [bool; KECCAK_RATE_IN_BYTES],
-}
-
-impl<F: Field> KeccakPaddingRow<F> {
-
-    fn clone(&self) -> KeccakPaddingRow<F> {
-        KeccakPaddingRow::<F> {
-            is_pads:  self.is_pads,
-            d_lens:  self.d_lens,
-            d_bytes: self.d_bytes,
-            d_rlcs: self.d_rlcs,
-            q_end: self.q_end,
-            randomness: self.randomness,
-            acc_len: self.acc_len,
-            acc_rlc: self.acc_rlc,
-        }
-    }
-
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////// 
@@ -435,6 +446,7 @@ impl<F: Field> Circuit<F> for KeccakPaddingCircuit<F> {
 //////////////////////////////////////////////////////////////////////////////////////////////////////////// 
 
 #[cfg(test)]
+#[allow(unused_assignments)]
 mod tests {
     use std::marker::PhantomData;
 
@@ -448,7 +460,7 @@ mod tests {
             size: 2usize.pow(k),
             _marker: PhantomData,
         };
-        let prover = MockProver::<F>::run(K, &circuit, vec![]).unwrap();
+        let prover = MockProver::<F>::run(k, &circuit, vec![]).unwrap();
 
 
         let err = prover.verify();
@@ -465,140 +477,377 @@ mod tests {
         assert_eq!(err.is_ok(), success);
     }
 
+    fn print_keccac_padding_witness<F: Field>(witness: KeccakPaddingRow<F>, d_bytes_block_len: usize){
+        println!("acc_len: {:?}", witness.acc_len);
+        println!("is_pads: {:?}", witness.is_pads);
+        println!("d_bytes: {:?}", witness.d_bytes);
+        println!("d_lens: {:?}", witness.d_lens);
+        if d_bytes_block_len < KECCAK_RATE_IN_BYTES { // some padding 
+            println!("Padding start: {:?}", witness.d_bytes[d_bytes_block_len]);
+            println!("Padding end: {:?}", witness.d_bytes[KECCAK_RATE_IN_BYTES - 1]);
+        }
+    }
+
     // [is_pads]    0 (data)   0 (data)  (pad) 1   (pad) 1  (pad) 1
     // [d_bytes]       79         106       128       0        1      [0]*CAPACITY//8
     // [d_lens]      base+1     base+2    base+2   base+2   base+2
-    // [rlc] 
+    // [d_rlc] 
 
-    fn generate_padding<F: Field>(data_len: u32) -> KeccakPaddingRow<F> {
-        let data_len_offset = data_len % KECCAK_RATE_IN_BYTES as u32;        
-        let data_len_offset_usize = data_len_offset as usize;
-        let data_len_base = data_len - data_len_offset;
-
-        let mut output = KeccakPaddingRow::<F> {
-            is_pads: [false; KECCAK_RATE_IN_BYTES], 
-            d_lens: [0; KECCAK_RATE_IN_BYTES], 
-            d_bytes: [0; KECCAK_WIDTH_IN_BYTES],
-            d_rlcs: [F::from(0u64); KECCAK_RATE_IN_BYTES],
-            q_end: 1u64,
-            randomness: KeccakPaddingCircuit::r(),
-            acc_len: data_len_base,
-            acc_rlc: F::one(),
-        };
-
+    fn generate_data_bytes(overall_data_len: u32) -> Vec<u8> {
+        let mut d_bytes_all = vec![0u8; overall_data_len as usize];
         let mut rng = thread_rng();
-        output.d_bytes.try_fill(&mut rng).unwrap();
-        for i in KECCAK_RATE_IN_BYTES..KECCAK_WIDTH_IN_BYTES {
-            output.d_bytes[i] = 0u8;
+        d_bytes_all.try_fill(&mut rng).unwrap();
+        d_bytes_all
+    }
+
+    fn generate_all_witnesses<F: Field>(overall_data_len: u32, verbose: bool) -> Vec<KeccakPaddingRow<F>> {
+        let d_bytes_all = generate_data_bytes(overall_data_len);
+        let overall_data_len_usize = overall_data_len as usize;
+        let n_blocks = overall_data_len_usize / KECCAK_RATE_IN_BYTES + 1; 
+        if verbose {
+            println!("n_blocks: {:?}", n_blocks);
+            println!("overall_data_len_usize: {:?}", overall_data_len_usize);
         }
 
-        output.is_pads[0] = data_len_offset_usize == 0;
-        output.d_lens[0] = data_len_base + !output.is_pads[0] as u32;
-        output.d_rlcs[0] = if output.is_pads[0] {
-            output.acc_rlc
-        } else {
-            output.acc_rlc * output.randomness + F::from(output.d_bytes[0] as u64)
+        let mut all_witnesses = Vec::with_capacity(n_blocks);
+        let mut acc_len = 0u32;
+        let mut acc_rlc = F::one();
+        let mut d_bytes_curr = vec![];
+
+        for i in 0..n_blocks {
+            let block_ind_start = i*KECCAK_RATE_IN_BYTES;
+            let block_ind_end = std::cmp::min((i+1)*KECCAK_RATE_IN_BYTES, overall_data_len_usize);
+            if verbose {
+                println!("block_ind_start: {:?}", block_ind_start);
+                println!("block_ind_end: {:?}", block_ind_end);
+                println!("data_block: {:?}", &d_bytes_all[block_ind_start..block_ind_end]);
+            }
+            if block_ind_start < d_bytes_all.len() {
+                d_bytes_curr = d_bytes_all[block_ind_start..block_ind_end].to_vec();
+            } else {
+                d_bytes_curr = vec![];
+            }
+
+            let curr_block_witness = 
+                generate_block_witness::<F>(d_bytes_curr, acc_len, acc_rlc, i == (n_blocks-1) || verbose);
+            acc_len = curr_block_witness.d_lens[curr_block_witness.d_lens.len()-1];
+            acc_rlc = curr_block_witness.d_rlcs[curr_block_witness.d_rlcs.len()-1];
+            all_witnesses.push(curr_block_witness);
+        }
+
+        all_witnesses
+    }
+
+    fn generate_block_witness<F: Field>(d_bytes_block: Vec<u8>, acc_len: u32, acc_rlc: F, print_witness_flag: bool) -> KeccakPaddingRow<F> {
+        assert!(d_bytes_block.len() <= KECCAK_RATE_IN_BYTES);
+
+        let mut witness = KeccakPaddingRow::<F> {
+            randomness: KeccakPaddingCircuit::r(),
+            acc_len: acc_len,
+            acc_rlc: acc_rlc,
+            is_pads: [false; KECCAK_RATE_IN_BYTES], 
+            d_bytes: [0u8; KECCAK_WIDTH_IN_BYTES],
+            d_lens: [0u32; KECCAK_RATE_IN_BYTES], 
+            d_rlcs: [F::from(0u64); KECCAK_RATE_IN_BYTES],
         };
 
-        for i in 1 as usize..KECCAK_RATE_IN_BYTES {
-            output.is_pads[i] = {
-                if i < data_len_offset_usize {
-                    false
-                } else {
-                    true
-                }
-            };
-            output.d_lens[i] = output.d_lens[i - 1] + !output.is_pads[i] as u32; // add 1 if data
-            output.d_rlcs[i] = if output.is_pads[i] {
-                output.d_rlcs[i - 1]
+        let mut curr_acc_len = acc_len;
+        let mut curr_acc_rlc = acc_rlc;
+        
+        for i in 0..KECCAK_RATE_IN_BYTES {
+            if i < d_bytes_block.len() { // data 
+                witness.d_bytes[i] = d_bytes_block[i];
+                curr_acc_len = curr_acc_len + 1; 
+                curr_acc_rlc = curr_acc_rlc * witness.randomness + F::from(witness.d_bytes[i] as u64)
+            } else {  // padding 
+                witness.is_pads[i] = true;
+            }
+            witness.d_lens[i] = curr_acc_len;
+            witness.d_rlcs[i] = curr_acc_rlc;
+        }
+
+        if d_bytes_block.len() < KECCAK_RATE_IN_BYTES { // some padding 
+            if d_bytes_block.len() == (KECCAK_RATE_IN_BYTES - 1) {
+                witness.d_bytes[KECCAK_RATE_IN_BYTES - 1] = 129;
             } else {
-                output.d_rlcs[i - 1] * output.randomness + F::from(output.d_bytes[i] as u64)
+                witness.d_bytes[d_bytes_block.len()] = 128;
+                witness.d_bytes[KECCAK_RATE_IN_BYTES - 1] = 1;
             }
         }
 
-        for i in data_len_offset_usize..KECCAK_RATE_IN_BYTES {
-            output.d_bytes[i] = 0u8;
+        if print_witness_flag {
+            println!("\nWITNESS START");
+            print_keccac_padding_witness(witness, d_bytes_block.len());
+            println!("WITNESS END\n");
         }
-        if data_len_offset_usize == (KECCAK_RATE_IN_BYTES - 1) {
-            output.d_bytes[data_len_offset_usize] = 129;
-        } else {
-            output.d_bytes[data_len_offset_usize] = 128;
-            output.d_bytes[KECCAK_RATE_IN_BYTES - 1] = 1;
-        }
-       
-        println!("is_pads: {:?}", output.is_pads);
-        println!("d_lens: {:?}", output.d_lens);
-        println!("d_bytes: {:?}", output.d_bytes);
-        println!("Padding start: {:?}", output.d_bytes[data_len_offset_usize]);
-        println!("Padding end: {:?}", output.d_bytes[KECCAK_RATE_IN_BYTES - 1]);
-        println!("END");
+        witness
+    }
+
+    static LOG_MAX_ROW: u32 = 10;
+
+    #[test]
+    fn padding_byte_2col_0_case() {
+        let data_offset = 0;
+        let witness_all = 
+        generate_all_witnesses::<Fr>((KECCAK_RATE_IN_BYTES+data_offset) as u32, false);
+
+        // witness_last_block.is_pads =   [1]*136
+        // witness_last_block.d_bytes = [128]*1 [0]*134 [1]*1
+        let witness_last_block = witness_all[witness_all.len()-1];
+        verify::<Fr>(LOG_MAX_ROW, witness_all, true);
+
+        // check constraints for padding-start is_pads
+        let mut witness_last_block_1 = witness_last_block;
+        witness_last_block_1.is_pads[data_offset] = false;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_1], false);
+
+        // check constraints for padding-start d_bytes
+        let mut witness_last_block_2 = witness_last_block;
+        witness_last_block_2.d_bytes[data_offset] = 0u8;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_2], false);
+
+        // check constraints for padding-mid is_pads
+        let mut witness_last_block_3 = witness_last_block;
+        witness_last_block_3.is_pads[data_offset + 2] = false;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_3], false);
+
+        // check constraints for padding-mid d_bytes
+        let mut witness_last_block_4 = witness_last_block;
+        witness_last_block_4.d_bytes[data_offset + 2] = 1u8;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_4], false);
+
+        // check constraints for padding-end is_pads
+        let mut witness_last_block_5 = witness_last_block;
+        witness_last_block_5.is_pads[KECCAK_RATE_IN_BYTES - 1] = false;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_5], false);
+
+        // check constraints for padding-end d_bytes
+        let mut witness_last_block_6 = witness_last_block;
+        witness_last_block_6.d_bytes[KECCAK_RATE_IN_BYTES - 1] = 0u8;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_6], false);
+
+        // check constraints for padding d_lens
+        let mut witness_last_block_8 = witness_last_block;
+        witness_last_block_8.d_lens[data_offset + 1] = 4 as u32; 
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_8], false);
+
+        // no constraints for padding RLC
+        let mut witness_last_block_10 = witness_last_block;
+        witness_last_block_10.d_rlcs[data_offset + 2] = Fr::from(4u64);
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_10], true);
+
+        // check constraints for acc_len
+        let mut witness_last_block_11 = witness_last_block;
+        witness_last_block_11.acc_len = 0u32;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_11], false);
+
+        // no constraints for acc_rlc since the last block is all padding
+        let mut witness_last_block_12 = witness_last_block;
+        witness_last_block_12.acc_rlc = Fr::from(0u64);
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_12], true);
         
-        output
-    }
-
-    static K: u32 = 10;
-
-    #[test]
-    fn byte_keccak_len_0() {
-        let input = generate_padding::<Fr>(0);
-        verify::<Fr>(K, vec![input], true);
     }
 
     #[test]
-    fn byte_keccak_len_1() {
-        let input = generate_padding::<Fr>(1);
-        verify::<Fr>(K, vec![input], true);
-    }
+    fn padding_byte_2col_1_case() {
+        let data_offset = 1;
+        let witness_all = 
+            generate_all_witnesses::<Fr>((KECCAK_RATE_IN_BYTES+data_offset) as u32, false);
 
-    #[test]
-    fn byte_keccak_len_135() {
-        let input = generate_padding::<Fr>(135);
-        verify::<Fr>(K, vec![input], true);
-    }
+        // witness_last_block.is_pads =   [0]*1       [1]*135
+        // witness_last_block.d_bytes = [data]*1 [128]*1 [0]*133 [1]*1
+        let witness_last_block = witness_all[witness_all.len()-1];
+        verify::<Fr>(LOG_MAX_ROW, witness_all, true);
 
-    #[test]
-    fn byte_keccak_len_300() {
-        let input = generate_padding::<Fr>(300);
-        verify::<Fr>(K, vec![input], true);
-    }
+        // check constraints for padding-start is_pads
+        let mut witness_last_block_1 = witness_last_block;
+        witness_last_block_1.is_pads[data_offset] = false;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_1], false);
 
-    #[test]
-    fn byte_keccak_invalid_padding_begin() {
-        let mut input = generate_padding::<Fr>(11);
-        verify::<Fr>(K, vec![input.clone()], true);
+        // check constraints for padding-start d_bytes
+        let mut witness_last_block_2 = witness_last_block;
+        witness_last_block_2.d_bytes[data_offset] = 0u8;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_2], false);
 
-        // first padding byte is set to 0
-        input.d_bytes[11] = 0u8;
-        verify::<Fr>(K, vec![input], false);
-    }
+        // check constraints for padding-mid is_pads
+        let mut witness_last_block_3 = witness_last_block;
+        witness_last_block_3.is_pads[data_offset + 2] = false;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_3], false);
 
-    #[test]
-    fn byte_keccak_invalid_padding_end() {
-        let mut input = generate_padding::<Fr>(73);
-        verify::<Fr>(K, vec![input.clone()], true);
+        // check constraints for padding-mid d_bytes
+        let mut witness_last_block_4 = witness_last_block;
+        witness_last_block_4.d_bytes[data_offset + 2] = 1u8;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_4], false);
 
-        // last padding byte is set to 0
-        input.d_bytes[KECCAK_RATE_IN_BYTES - 1] = 0u8;
-        verify::<Fr>(K, vec![input], false);
-    }
+        // check constraints for padding-end is_pads
+        let mut witness_last_block_5 = witness_last_block;
+        witness_last_block_5.is_pads[KECCAK_RATE_IN_BYTES - 1] = false;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_5], false);
 
-    #[test]
-    fn byte_keccak_invalid_padding_mid() {
-        let mut input = generate_padding::<Fr>(123);
-        verify::<Fr>(K, vec![input.clone()], true);
+        // check constraints for padding-end d_bytes
+        let mut witness_last_block_6 = witness_last_block;
+        witness_last_block_6.d_bytes[KECCAK_RATE_IN_BYTES - 1] = 0u8;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_6], false);
+
+        // check constraints for non-padding d_lens
+        let mut witness_last_block_7 = witness_last_block;
+        witness_last_block_7.d_lens[0] = 4 as u32;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_7], false);
         
-        // nonzero padding in intermediate padding regions
-        input.d_bytes[KECCAK_RATE_IN_BYTES - 2] = 1u8;
-        verify::<Fr>(K, vec![input], false);
+        // check constraints for padding d_lens
+        let mut witness_last_block_8 = witness_last_block;
+        witness_last_block_8.d_lens[data_offset + 1] = 4 as u32; 
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_8], false);
+
+        // check constraints for non-padding RLC
+        let mut witness_last_block_9 = witness_last_block;
+        witness_last_block_9.d_rlcs[0] = Fr::from(4u64);
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_9.clone()], false);
+
+        // no constraints for padding RLC
+        let mut witness_last_block_10 = witness_last_block;
+        witness_last_block_10.d_rlcs[data_offset + 2] = Fr::from(4u64);
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_10], true);
+
+        // check constraints for acc_len
+        let mut witness_last_block_11 = witness_last_block;
+        witness_last_block_11.acc_len = 0u32;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_11], false);
+
+        // check constraints for acc_rlc
+        let mut witness_last_block_12 = witness_last_block;
+        witness_last_block_12.acc_rlc = Fr::from(0u64);
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_12], false);
+        
     }
 
     #[test]
-    fn byte_keccak_invalid_input_len() {
-        let mut input = generate_padding::<Fr>(123);
-        verify::<Fr>(K, vec![input.clone()], true);
+        fn padding_byte_2col_135_case() {
+        let data_offset = 135;
+        let witness_all = 
+        generate_all_witnesses::<Fr>((KECCAK_RATE_IN_BYTES+data_offset) as u32, false);
 
-        // wrong d_len
-        input.d_lens[124] = 124;
-        verify::<Fr>(K, vec![input], false);
+        // witness_last_block.is_pads =   [0]*135       [1]*1
+        // witness_last_block.d_bytes = [data]*135     [129]*1
+        let witness_last_block = witness_all[witness_all.len()-1];
+        verify::<Fr>(LOG_MAX_ROW, witness_all, true);
+
+        // check constraints for padding-start/end is_pads
+        let mut witness_last_block_1 = witness_last_block;
+        witness_last_block_1.is_pads[data_offset] = false;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_1], false);
+
+        // check constraints for padding-start/end d_bytes
+        let mut witness_last_block_2 = witness_last_block;
+        witness_last_block_2.d_bytes[data_offset] = 0u8;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_2], false);
+
+        // check constraints for non-padding d_lens
+        let mut witness_last_block_7 = witness_last_block;
+        witness_last_block_7.d_lens[2] = 4 as u32;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_7], false);
+        
+        // check constraints for padding d_lens
+        let mut witness_last_block_8 = witness_last_block;
+        witness_last_block_8.d_lens[data_offset] = 4 as u32; 
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_8], false);
+
+        // check constraints for non-padding RLC
+        let mut witness_last_block_9 = witness_last_block;
+        witness_last_block_9.d_rlcs[2] = Fr::from(4u64);
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_9.clone()], false);
+
+        // no constraints for padding RLC
+        let mut witness_last_block_10 = witness_last_block;
+        witness_last_block_10.d_rlcs[data_offset] = Fr::from(4u64);
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_10], true);
+
+        // check constraints for acc_len
+        let mut witness_last_block_11 = witness_last_block;
+        witness_last_block_11.acc_len = 0u32;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_11], false);
+
+        // check constraints for acc_rlc
+        let mut witness_last_block_12 = witness_last_block;
+        witness_last_block_12.acc_rlc = Fr::from(0u64);
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_12], false);
+        
+        
     }
+
+    #[test]
+    fn padding_byte_2col_regular_case() {
+        let data_offset = 123;
+        let witness_all = 
+            generate_all_witnesses::<Fr>((KECCAK_RATE_IN_BYTES+data_offset) as u32, false);
+
+        // witness_last_block.is_pads =   [0]*123       [1]*13
+        // witness_last_block.d_bytes = [data]*123 [128]*1 [0]*12 [1]*1
+        let witness_last_block = witness_all[witness_all.len()-1];
+        verify::<Fr>(LOG_MAX_ROW, witness_all, true);
+
+        // check constraints for padding-start is_pads
+        let mut witness_last_block_1 = witness_last_block;
+        witness_last_block_1.is_pads[data_offset] = false;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_1], false);
+
+        // check constraints for padding-start d_bytes
+        let mut witness_last_block_2 = witness_last_block;
+        witness_last_block_2.d_bytes[data_offset] = 0u8;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_2], false);
+
+        // check constraints for padding-mid is_pads
+        let mut witness_last_block_3 = witness_last_block;
+        witness_last_block_3.is_pads[data_offset + 2] = false;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_3], false);
+
+        // check constraints for padding-mid d_bytes
+        let mut witness_last_block_4 = witness_last_block;
+        witness_last_block_4.d_bytes[data_offset + 2] = 1u8;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_4], false);
+
+        // check constraints for padding-end is_pads
+        let mut witness_last_block_5 = witness_last_block;
+        witness_last_block_5.is_pads[KECCAK_RATE_IN_BYTES - 1] = false;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_5], false);
+
+        // check constraints for padding-end d_bytes
+        let mut witness_last_block_6 = witness_last_block;
+        witness_last_block_6.d_bytes[KECCAK_RATE_IN_BYTES - 1] = 0u8;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_6], false);
+
+        // check constraints for non-padding d_lens
+        let mut witness_last_block_7 = witness_last_block;
+        witness_last_block_7.d_lens[2] = 4 as u32;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_7], false);
+        
+        // check constraints for padding d_lens
+        let mut witness_last_block_8 = witness_last_block;
+        witness_last_block_8.d_lens[data_offset + 1] = 4 as u32; 
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_8], false);
+
+        // check constraints for non-padding RLC
+        let mut witness_last_block_9 = witness_last_block;
+        witness_last_block_9.d_rlcs[2] = Fr::from(4u64);
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_9.clone()], false);
+
+        // no constraints for padding RLC
+        let mut witness_last_block_10 = witness_last_block;
+        witness_last_block_10.d_rlcs[data_offset + 2] = Fr::from(4u64);
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_10], true);
+
+        // check constraints for acc_len
+        let mut witness_last_block_11 = witness_last_block;
+        witness_last_block_11.acc_len = 0u32;
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_11], false);
+
+        // check constraints for acc_rlc
+        let mut witness_last_block_12 = witness_last_block;
+        witness_last_block_12.acc_rlc = Fr::from(0u64);
+        verify::<Fr>(LOG_MAX_ROW, vec![witness_last_block_12], false);
+        
+        
+    }
+
+
 }
