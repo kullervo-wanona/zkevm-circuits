@@ -594,31 +594,31 @@ mod tests {
     static K: u32 = 10;
 
     #[test]
-    fn byte_keccak_len_0() {
+    fn byte_4col_keccak_len_0() {
         let input = generate_padding::<Fr>(0);
         verify::<Fr>(K, vec![input], true);
     }
 
     #[test]
-    fn byte_keccak_len_1() {
+    fn byte_4col_keccak_len_1() {
         let input = generate_padding::<Fr>(1);
         verify::<Fr>(K, vec![input], true);
     }
 
     #[test]
-    fn byte_keccak_len_135() {
+    fn byte_4col_keccak_len_135() {
         let input = generate_padding::<Fr>(135);
         verify::<Fr>(K, vec![input], true);
     }
 
     #[test]
-    fn byte_keccak_len_300() {
+    fn byte_4col_keccak_len_300() {
         let input = generate_padding::<Fr>(300);
         verify::<Fr>(K, vec![input], true);
     }
 
     #[test]
-    fn byte_keccak_invalid_padding_begin() {
+    fn byte_4col_keccak_invalid_padding_begin() {
         let mut input = generate_padding::<Fr>(11);
         verify::<Fr>(K, vec![input.clone()], true);
 
@@ -628,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn byte_keccak_invalid_padding_end() {
+    fn byte_4col_keccak_invalid_padding_end() {
         let mut input = generate_padding::<Fr>(73);
         verify::<Fr>(K, vec![input.clone()], true);
 
@@ -638,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn byte_keccak_invalid_padding_mid() {
+    fn byte_4col_keccak_invalid_padding_mid() {
         let mut input = generate_padding::<Fr>(123);
         verify::<Fr>(K, vec![input.clone()], true);
         
@@ -648,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn byte_keccak_invalid_input_len() {
+    fn byte_4col_keccak_invalid_input_len() {
         let mut input = generate_padding::<Fr>(123);
         verify::<Fr>(K, vec![input.clone()], true);
 

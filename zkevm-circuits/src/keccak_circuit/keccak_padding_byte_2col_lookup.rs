@@ -10,16 +10,14 @@ use gadgets::util::not;
 use halo2_proofs::{
     circuit::{Layouter, Region, SimpleFloorPlanner, Table},
     plonk::{
-        Advice, Circuit, Column, ConstraintSystem, Error, Selector, TableColumn,
+        Advice, Circuit, Column, ConstraintSystem, Error, Selector, TableColumn, Expression,
     },
     poly::Rotation,
 };
 use std::{env::var, marker::PhantomData, vec};
+use rand::{thread_rng, Fill};
 
-const KECCAK_WIDTH: usize = 5 * 5 * 64;
 const KECCAK_RATE: usize = 1088;
-
-const KECCAK_WIDTH_IN_BYTES: usize = KECCAK_WIDTH / 8;
 const KECCAK_RATE_IN_BYTES: usize = KECCAK_RATE / 8;
 
 fn get_degree() -> usize {
@@ -30,7 +28,7 @@ fn get_degree() -> usize {
 }
 
 // [is_pads]    0 (data)   0 (data)  (pad) 1   (pad) 1  (pad) 1
-// [d_bytes]       79         106       128       0        1      [0]*CAPACITY//8
+// [d_bytes]       79         106       128       0        1  
 // [d_lens]      base+1     base+2    base+2   base+2   base+2
 // [rlc] 
 
@@ -116,28 +114,30 @@ impl<F: Field> PaddingCombinationsConfig<F> {
 #[derive(Clone, Debug)]
 #[allow(missing_docs)]
 pub struct KeccakPaddingConfig<F> {
+    padding_combinations_table: PaddingCombinationsConfig<F>,
+
     q_enable: Selector,
     randomness: Column<Advice>,
     acc_len: Column<Advice>,
     acc_rlc: Column<Advice>,
     is_pads: [Column<Advice>; KECCAK_RATE_IN_BYTES],
-    d_bytes: [Column<Advice>; KECCAK_WIDTH_IN_BYTES],
+    d_bytes: [Column<Advice>; KECCAK_RATE_IN_BYTES],
     d_lens: [Column<Advice>; KECCAK_RATE_IN_BYTES],
     d_rlcs: [Column<Advice>; KECCAK_RATE_IN_BYTES],
+
     _marker: PhantomData<F>,
-    padding_combinations_table: PaddingCombinationsConfig<F>,
 }
 
 impl<F: Field> KeccakPaddingConfig<F> {
     pub(crate) fn configure(cs: &mut ConstraintSystem<F>) -> Self {
-        let q_enable = cs.selector();
         let padding_combinations_table = PaddingCombinationsConfig::<F>::configure(cs);
 
+        let q_enable = cs.selector();
         let randomness = cs.advice_column();        
         let acc_len = cs.advice_column();        
         let acc_rlc = cs.advice_column();        
         let is_pads = [(); KECCAK_RATE_IN_BYTES].map(|_| cs.advice_column());
-        let d_bytes = [(); KECCAK_WIDTH_IN_BYTES].map(|_| cs.advice_column());
+        let d_bytes = [(); KECCAK_RATE_IN_BYTES].map(|_| cs.advice_column());
         let d_lens = [(); KECCAK_RATE_IN_BYTES].map(|_| cs.advice_column());
         let d_rlcs = [(); KECCAK_RATE_IN_BYTES].map(|_| cs.advice_column());
 
@@ -147,7 +147,7 @@ impl<F: Field> KeccakPaddingConfig<F> {
         // Only particular combinations are allowed, check PaddingCombinationsConfig load method comments.
         for i in 0..is_pads.len() {
             cs.lookup("Check allowed data/padding/flag combinations", |virt_cells| {
-                let is_pad_curr =virt_cells.query_advice(is_pads[i], Rotation::cur());
+                let is_pad_curr = virt_cells.query_advice(is_pads[i], Rotation::cur());
                 let d_bytes_curr = virt_cells.query_advice(d_bytes[i], Rotation::cur());
 
                 // let q_enable = virt_cells.query_selector(q_enable);
@@ -162,8 +162,11 @@ impl<F: Field> KeccakPaddingConfig<F> {
             });
         };
 
-        cs.create_gate("Check inter-cell relationships for data/padding/flag", |virt_cells| {
+        cs.create_gate("Check inter-cell relationships", |virt_cells| {
             let mut cb = BaseConstraintBuilder::new(5);
+
+            let acc_len_prev = virt_cells.query_advice(acc_len, Rotation::cur());
+            let acc_rlc_prev = virt_cells.query_advice(acc_rlc, Rotation::cur());
             
             let is_pad_last = virt_cells.query_advice(is_pads[is_pads.len() - 1], Rotation::cur());
             let is_pad_last_prev = virt_cells.query_advice(is_pads[is_pads.len() - 2], Rotation::cur());
@@ -192,11 +195,17 @@ impl<F: Field> KeccakPaddingConfig<F> {
 
             // This is where most of the constraints are effectuated for the padding flags and data/padding bytes. 
             for i in 0..is_pads.len() {
-                let d_byte_curr = virt_cells.query_advice(d_bytes[i], Rotation::cur());
+                let r = virt_cells.query_advice(randomness, Rotation::cur());
+
                 let is_pad_curr = virt_cells.query_advice(is_pads[i], Rotation::cur());
-            
-                let mut is_pad_prev = 0u64.expr();
-                if i > 0 {
+                let d_byte_curr = virt_cells.query_advice(d_bytes[i], Rotation::cur());
+                let d_len_curr = virt_cells.query_advice(d_lens[i], Rotation::cur());
+                let d_rlc_curr = virt_cells.query_advice(d_rlcs[i], Rotation::cur());
+                let is_pad_prev: Expression<F>;
+
+                if i == 0 {
+                    is_pad_prev = 0u64.expr();
+                } else {
                     is_pad_prev = virt_cells.query_advice(is_pads[i - 1], Rotation::cur());
                 }
                 let is_padding_step = is_pad_curr.clone() - is_pad_prev.clone();
@@ -223,23 +232,6 @@ impl<F: Field> KeccakPaddingConfig<F> {
                         cb.require_equal("Check d_bytes padding intermediate", d_byte_curr.clone(), 0u64.expr());
                     });
                 }
-            }    
-            cb.gate(virt_cells.query_selector(q_enable))
-        });
-
-        cs.create_gate("Check len and rlc inputs", |virt_cells| {
-            let mut cb = BaseConstraintBuilder::new(5);
-
-            let acc_len_prev = virt_cells.query_advice(acc_len, Rotation::cur());
-            let acc_rlc_prev = virt_cells.query_advice(acc_rlc, Rotation::cur());
-
-            for i in 0..is_pads.len() {
-                let r = virt_cells.query_advice(randomness, Rotation::cur());
-
-                let is_pad_curr = virt_cells.query_advice(is_pads[i], Rotation::cur());
-                let d_byte_curr = virt_cells.query_advice(d_bytes[i], Rotation::cur());
-                let d_len_curr = virt_cells.query_advice(d_lens[i], Rotation::cur());
-                let d_rlc_curr = virt_cells.query_advice(d_rlcs[i], Rotation::cur());
 
                 if i == 0 {
                     cb.require_equal("d_len[0] = acc_len_prev + !s_0", d_len_curr.clone(), acc_len_prev.clone() + not::expr(is_pad_curr.clone()));
@@ -257,12 +249,13 @@ impl<F: Field> KeccakPaddingConfig<F> {
                     cb.require_equal("d_rlc[i] = d_rlc[i-1]*r if s == 0 else d_rlc[i]", d_rlc_curr.clone(), 
                     select::expr(is_pad_curr.clone(), d_rlc_curr.clone(), d_rlc_prev.clone() * r.clone() + d_byte_curr.clone()));
                 } 
-            }
 
+            }    
             cb.gate(virt_cells.query_selector(q_enable))
         });
 
         KeccakPaddingConfig {
+            padding_combinations_table, 
             q_enable,
             randomness,
             acc_len,
@@ -272,7 +265,6 @@ impl<F: Field> KeccakPaddingConfig<F> {
             d_lens,
             d_rlcs,
             _marker: PhantomData,
-            padding_combinations_table, 
         }
     }
 
@@ -280,10 +272,12 @@ impl<F: Field> KeccakPaddingConfig<F> {
         &self,
         mut layouter: impl Layouter<F>,
         _size: usize,
-        keccak_padding_row: &KeccakPaddingRow<F>,
         randomness: F,
+        keccak_block_witness: KeccakBlockWitness<F>,
     ) -> Result<(), Error> {
+
         self.padding_combinations_table.load(&mut layouter)?;
+
         layouter.assign_region(
             || "assign keccak padded data",
             |mut region| {
@@ -291,12 +285,7 @@ impl<F: Field> KeccakPaddingConfig<F> {
                     &mut region,
                     0,
                     randomness,
-                    keccak_padding_row.acc_len,
-                    keccak_padding_row.acc_rlc,
-                    keccak_padding_row.is_pads,
-                    keccak_padding_row.d_bytes,
-                    keccak_padding_row.d_lens,
-                    keccak_padding_row.d_rlcs,
+                    keccak_block_witness,
                 )?;
                 Ok(())
             },
@@ -308,12 +297,7 @@ impl<F: Field> KeccakPaddingConfig<F> {
         region: &mut Region<'_, F>,
         offset: usize,
         randomness: F,
-        acc_len: u32,
-        acc_rlc: F,
-        is_pads: [bool; KECCAK_RATE_IN_BYTES],
-        d_bytes: [u8; KECCAK_WIDTH_IN_BYTES],
-        d_lens: [u32; KECCAK_RATE_IN_BYTES],
-        d_rlcs: [F; KECCAK_RATE_IN_BYTES],
+        keccak_block_witness: KeccakBlockWitness<F>,
     ) -> Result<(), Error> {
         self.q_enable.enable(region, offset)?;
 
@@ -328,17 +312,17 @@ impl<F: Field> KeccakPaddingConfig<F> {
             || format!("assign acc_len {}", offset),
             self.acc_len,
             offset,
-            || Ok(F::from(acc_len as u64)),
+            || Ok(F::from(keccak_block_witness.acc_len as u64)),
         )?;
 
         region.assign_advice(
             || format!("assign acc_rlc {}", offset),
             self.acc_rlc,
             offset,
-            || Ok(acc_rlc),
+            || Ok(keccak_block_witness.acc_rlc),
         )?;
 
-        for (idx, (is_pad, column)) in is_pads.iter().zip(self.is_pads.iter()).enumerate() {
+        for (idx, (is_pad, column)) in keccak_block_witness.is_pads.iter().zip(self.is_pads.iter()).enumerate() {
             region.assign_advice(
                 || format!("assign is_pads {} {}", idx, offset),
                 *column,
@@ -347,7 +331,7 @@ impl<F: Field> KeccakPaddingConfig<F> {
             )?;
         }
 
-        for (idx, (byte, column)) in d_bytes.iter().zip(self.d_bytes.iter()).enumerate() {
+        for (idx, (byte, column)) in keccak_block_witness.d_bytes.iter().zip(self.d_bytes.iter()).enumerate() {
             region.assign_advice(
                 || format!("assign d_bytes {} {}", idx, offset),
                 *column,
@@ -356,7 +340,7 @@ impl<F: Field> KeccakPaddingConfig<F> {
             )?;
         }
 
-        for (idx, (d_len, column)) in d_lens.iter().zip(self.d_lens.iter()).enumerate() {
+        for (idx, (d_len, column)) in keccak_block_witness.d_lens.iter().zip(self.d_lens.iter()).enumerate() {
             region.assign_advice(
                 || format!("assign d_lens {} {}", idx, offset),
                 *column,
@@ -365,7 +349,7 @@ impl<F: Field> KeccakPaddingConfig<F> {
             )?;
         }
 
-        for (idx, (d_rlc, column)) in d_rlcs.iter().zip(self.d_rlcs.iter()).enumerate() {
+        for (idx, (d_rlc, column)) in keccak_block_witness.d_rlcs.iter().zip(self.d_rlcs.iter()).enumerate() {
             region.assign_advice(
                 || format!("assign d_rlcs {} {}", idx, offset),
                 *column,
@@ -384,112 +368,27 @@ impl<F: Field> KeccakPaddingConfig<F> {
 //////////////////////////////////////////////////////////////////////////////////////////////////////////// 
 
 #[derive(Copy, Clone)]
-pub(crate) struct KeccakPaddingRow<F: Field> {
+pub(crate) struct KeccakBlockWitness<F: Field> {
     pub(crate) randomness: F,
     pub(crate) acc_len: u32,
     pub(crate) acc_rlc: F,
     pub(crate) is_pads: [bool; KECCAK_RATE_IN_BYTES],
-    pub(crate) d_bytes: [u8; KECCAK_WIDTH_IN_BYTES],
+    pub(crate) d_bytes: [u8; KECCAK_RATE_IN_BYTES],
     pub(crate) d_lens: [u32; KECCAK_RATE_IN_BYTES],
     pub(crate) d_rlcs: [F; KECCAK_RATE_IN_BYTES],
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
-
-#[derive(Default)]
-#[allow(missing_docs)]
-pub struct KeccakPaddingCircuit<F: Field> {
-    inputs: Vec<KeccakPaddingRow<F>>,
-    size: usize,
-    _marker: PhantomData<F>,
-}
-
-impl<F: Field> KeccakPaddingCircuit<F> {
-    fn r() -> F {
-        F::from(123456)
+impl<F: Field> Default for KeccakBlockWitness<F> {
+    fn default() -> KeccakBlockWitness<F> {
+        KeccakBlockWitness::<F>::generate_all_witnesses(0, 0)[0]
     }
 }
 
-impl<F: Field> Circuit<F> for KeccakPaddingCircuit<F> {
-    type Config = KeccakPaddingConfig<F>;
-    type FloorPlanner = SimpleFloorPlanner;
-
-    fn without_witnesses(&self) -> Self {
-        Self::default()
-    }
-
-    fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
-        KeccakPaddingConfig::configure(meta)
-    }
-
-    fn synthesize(
-        &self,
-        config: Self::Config,
-        layouter: impl Layouter<F>,
-    ) -> Result<(), Error> {
-        config.assign(
-            layouter,
-            self.size,
-            &self.inputs[0],
-            KeccakPaddingCircuit::r(),
-        )?;
-        Ok(())
-    }
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
-
-#[cfg(test)]
 #[allow(unused_assignments)]
-mod tests {
-    use std::marker::PhantomData;
-
-    use super::*;
-    use halo2_proofs::{dev::MockProver, pairing::bn256::Fr};
-    use rand::{thread_rng, Fill};
-
-    fn verify<F: Field>(k: u32, inputs: Vec<KeccakPaddingRow<F>>, success: bool) {
-        let circuit = KeccakPaddingCircuit::<F> {
-            inputs,
-            size: 2usize.pow(k),
-            _marker: PhantomData,
-        };
-        let prover = MockProver::<F>::run(k, &circuit, vec![]).unwrap();
-
-
-        let err = prover.verify();
-
-        let print_failures = true;
-        if err.is_err() && print_failures {
-            for e in err.err().iter() {
-                for s in e.iter() {
-                    println!("{}", s);
-                }
-            }
-        }
-        let err = prover.verify();
-        assert_eq!(err.is_ok(), success);
-    }
-
-    fn print_keccac_padding_witness<F: Field>(witness: KeccakPaddingRow<F>, d_bytes_block_len: usize){
-        println!("acc_len: {:?}", witness.acc_len);
-        println!("is_pads: {:?}", witness.is_pads);
-        println!("d_bytes: {:?}", witness.d_bytes);
-        println!("d_lens: {:?}", witness.d_lens);
-        if d_bytes_block_len < KECCAK_RATE_IN_BYTES { // some padding 
-            println!("Padding start: {:?}", witness.d_bytes[d_bytes_block_len]);
-            println!("Padding end: {:?}", witness.d_bytes[KECCAK_RATE_IN_BYTES - 1]);
-        }
-    }
+impl<F: Field> KeccakBlockWitness<F> {
 
     // [is_pads]    0 (data)   0 (data)  (pad) 1   (pad) 1  (pad) 1
-    // [d_bytes]       79         106       128       0        1      [0]*CAPACITY//8
+    // [d_bytes]       79         106       128       0        1  
     // [d_lens]      base+1     base+2    base+2   base+2   base+2
     // [d_rlc] 
 
@@ -500,11 +399,11 @@ mod tests {
         d_bytes_all
     }
 
-    fn generate_all_witnesses<F: Field>(overall_data_len: u32, verbose: bool) -> Vec<KeccakPaddingRow<F>> {
-        let d_bytes_all = generate_data_bytes(overall_data_len);
+    fn generate_all_witnesses(overall_data_len: u32, verbosity: u32) -> Vec<KeccakBlockWitness<F>> {
+        let d_bytes_all = KeccakBlockWitness::<F>::generate_data_bytes(overall_data_len);
         let overall_data_len_usize = overall_data_len as usize;
         let n_blocks = overall_data_len_usize / KECCAK_RATE_IN_BYTES + 1; 
-        if verbose {
+        if verbosity == 2 {
             println!("n_blocks: {:?}", n_blocks);
             println!("overall_data_len_usize: {:?}", overall_data_len_usize);
         }
@@ -517,7 +416,7 @@ mod tests {
         for i in 0..n_blocks {
             let block_ind_start = i*KECCAK_RATE_IN_BYTES;
             let block_ind_end = std::cmp::min((i+1)*KECCAK_RATE_IN_BYTES, overall_data_len_usize);
-            if verbose {
+            if verbosity == 2 {
                 println!("block_ind_start: {:?}", block_ind_start);
                 println!("block_ind_end: {:?}", block_ind_end);
                 println!("data_block: {:?}", &d_bytes_all[block_ind_start..block_ind_end]);
@@ -529,7 +428,8 @@ mod tests {
             }
 
             let curr_block_witness = 
-                generate_block_witness::<F>(d_bytes_curr, acc_len, acc_rlc, i == (n_blocks-1) || verbose);
+                KeccakBlockWitness::<F>::generate_block_witness(d_bytes_curr, acc_len, acc_rlc, 
+                    verbosity == 2 || (verbosity == 1 && i == (n_blocks-1)));
             acc_len = curr_block_witness.d_lens[curr_block_witness.d_lens.len()-1];
             acc_rlc = curr_block_witness.d_rlcs[curr_block_witness.d_rlcs.len()-1];
             all_witnesses.push(curr_block_witness);
@@ -538,15 +438,15 @@ mod tests {
         all_witnesses
     }
 
-    fn generate_block_witness<F: Field>(d_bytes_block: Vec<u8>, acc_len: u32, acc_rlc: F, print_witness_flag: bool) -> KeccakPaddingRow<F> {
+    fn generate_block_witness(d_bytes_block: Vec<u8>, acc_len: u32, acc_rlc: F, verbose: bool) -> KeccakBlockWitness<F> {
         assert!(d_bytes_block.len() <= KECCAK_RATE_IN_BYTES);
 
-        let mut witness = KeccakPaddingRow::<F> {
+        let mut witness = KeccakBlockWitness::<F> {
             randomness: KeccakPaddingCircuit::r(),
             acc_len: acc_len,
             acc_rlc: acc_rlc,
             is_pads: [false; KECCAK_RATE_IN_BYTES], 
-            d_bytes: [0u8; KECCAK_WIDTH_IN_BYTES],
+            d_bytes: [0u8; KECCAK_RATE_IN_BYTES],
             d_lens: [0u32; KECCAK_RATE_IN_BYTES], 
             d_rlcs: [F::from(0u64); KECCAK_RATE_IN_BYTES],
         };
@@ -575,25 +475,129 @@ mod tests {
             }
         }
 
-        if print_witness_flag {
+        if verbose {
             println!("\nWITNESS START");
-            print_keccac_padding_witness(witness, d_bytes_block.len());
+            KeccakBlockWitness::<F>::print_keccac_padding_witness(witness, d_bytes_block.len());
             println!("WITNESS END\n");
         }
         witness
     }
 
+    fn print_keccac_padding_witness(witness: KeccakBlockWitness<F>, d_bytes_block_len: usize) {
+        println!("acc_len: {:?}", witness.acc_len);
+        println!("is_pads: {:?}", witness.is_pads);
+        println!("d_bytes: {:?}", witness.d_bytes);
+        println!("d_lens: {:?}", witness.d_lens);
+        if d_bytes_block_len < KECCAK_RATE_IN_BYTES { // some padding 
+            println!("Padding start: {:?}", witness.d_bytes[d_bytes_block_len]);
+            println!("Padding end: {:?}", witness.d_bytes[KECCAK_RATE_IN_BYTES - 1]);
+        }
+    }
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
+
+#[derive(Default)]
+#[allow(missing_docs)]
+pub struct KeccakPaddingCircuit<F: Field> {
+    size: usize,
+    input_keccak_block_witness: KeccakBlockWitness<F>,
+    _marker: PhantomData<F>,
+}
+
+impl<F: Field> KeccakPaddingCircuit<F> {
+    fn r() -> F {
+        F::from(123456)
+    }
+}
+
+impl<F: Field> Circuit<F> for KeccakPaddingCircuit<F> {
+    type Config = KeccakPaddingConfig<F>;
+    type FloorPlanner = SimpleFloorPlanner;
+
+    fn without_witnesses(&self) -> Self {
+        Self::default()
+    }
+
+    fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
+        KeccakPaddingConfig::configure(meta)
+    }
+
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        layouter: impl Layouter<F>,
+    ) -> Result<(), Error> {
+
+        config.assign(
+            layouter,
+            self.size,
+            KeccakPaddingCircuit::r(),
+            self.input_keccak_block_witness,
+        )?;
+        Ok(())
+    }
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////// 
+
+#[cfg(test)]
+mod tests {
+    use std::marker::PhantomData;
+
+    use super::*;
+    use halo2_proofs::{dev::MockProver, pairing::bn256::Fr};
+
+    fn verify<F: Field>(k: u32, input_keccak_block_witnesses: Vec<KeccakBlockWitness<F>>, joint_success: bool) {
+        
+        let mut all_succeeded = true;
+        for i in 0..input_keccak_block_witnesses.len() {
+            println!("Verifying block {}", (i+1));
+
+            let circuit = KeccakPaddingCircuit::<F> {
+                size: 2usize.pow(k),
+                input_keccak_block_witness: input_keccak_block_witnesses[i],
+                _marker: PhantomData,
+            };
+            let prover = MockProver::<F>::run(k, &circuit, vec![]).unwrap();
+
+
+            let err = prover.verify();
+
+            let print_failures = true;
+            if err.is_err() && print_failures {
+                for e in err.err().iter() {
+                    for s in e.iter() {
+                        println!("{}", s);
+                    }
+                }
+            }
+            let err = prover.verify();
+            all_succeeded = all_succeeded && err.is_ok();
+        }
+        assert_eq!(all_succeeded, joint_success);
+
+    }
+
     static LOG_MAX_ROW: u32 = 10;
 
     #[test]
-    fn padding_byte_2col_0_case() {
+    fn test_case_0() {
         let data_offset = 0;
         let witness_all = 
-        generate_all_witnesses::<Fr>((KECCAK_RATE_IN_BYTES+data_offset) as u32, false);
+            KeccakBlockWitness::<Fr>::generate_all_witnesses((KECCAK_RATE_IN_BYTES+data_offset) as u32, 1);
 
         // witness_last_block.is_pads =   [1]*136
         // witness_last_block.d_bytes = [128]*1 [0]*134 [1]*1
         let witness_last_block = witness_all[witness_all.len()-1];
+
         verify::<Fr>(LOG_MAX_ROW, witness_all, true);
 
         // check constraints for padding-start is_pads
@@ -649,14 +653,15 @@ mod tests {
     }
 
     #[test]
-    fn padding_byte_2col_1_case() {
+    fn test_case_1() {
         let data_offset = 1;
         let witness_all = 
-            generate_all_witnesses::<Fr>((KECCAK_RATE_IN_BYTES+data_offset) as u32, false);
+            KeccakBlockWitness::<Fr>::generate_all_witnesses((KECCAK_RATE_IN_BYTES+data_offset) as u32, 1);
 
         // witness_last_block.is_pads =   [0]*1       [1]*135
         // witness_last_block.d_bytes = [data]*1 [128]*1 [0]*133 [1]*1
         let witness_last_block = witness_all[witness_all.len()-1];
+
         verify::<Fr>(LOG_MAX_ROW, witness_all, true);
 
         // check constraints for padding-start is_pads
@@ -722,14 +727,15 @@ mod tests {
     }
 
     #[test]
-        fn padding_byte_2col_135_case() {
+        fn test_case_135() {
         let data_offset = 135;
         let witness_all = 
-        generate_all_witnesses::<Fr>((KECCAK_RATE_IN_BYTES+data_offset) as u32, false);
+            KeccakBlockWitness::<Fr>::generate_all_witnesses((KECCAK_RATE_IN_BYTES+data_offset) as u32, 1);
 
         // witness_last_block.is_pads =   [0]*135       [1]*1
         // witness_last_block.d_bytes = [data]*135     [129]*1
         let witness_last_block = witness_all[witness_all.len()-1];
+
         verify::<Fr>(LOG_MAX_ROW, witness_all, true);
 
         // check constraints for padding-start/end is_pads
@@ -776,15 +782,24 @@ mod tests {
     }
 
     #[test]
-    fn padding_byte_2col_regular_case() {
+    fn test_case_common() {
         let data_offset = 123;
+        
         let witness_all = 
-            generate_all_witnesses::<Fr>((KECCAK_RATE_IN_BYTES+data_offset) as u32, false);
+            KeccakBlockWitness::<Fr>::generate_all_witnesses((KECCAK_RATE_IN_BYTES+data_offset) as u32, 1);
+        verify::<Fr>(LOG_MAX_ROW, witness_all.clone(), true);
+
+        let mut witness_all_clone_1 = witness_all.clone();
+        witness_all_clone_1[0].acc_len = 3u32;
+        verify::<Fr>(LOG_MAX_ROW, witness_all_clone_1, false);
+
+        let mut witness_all_clone_2 = witness_all.clone();
+        witness_all_clone_2[0].acc_rlc = Fr::from(5u64);
+        verify::<Fr>(LOG_MAX_ROW, witness_all_clone_2, false);
 
         // witness_last_block.is_pads =   [0]*123       [1]*13
         // witness_last_block.d_bytes = [data]*123 [128]*1 [0]*12 [1]*1
-        let witness_last_block = witness_all[witness_all.len()-1];
-        verify::<Fr>(LOG_MAX_ROW, witness_all, true);
+        let witness_last_block = witness_all.clone()[witness_all.len()-1];
 
         // check constraints for padding-start is_pads
         let mut witness_last_block_1 = witness_last_block;
