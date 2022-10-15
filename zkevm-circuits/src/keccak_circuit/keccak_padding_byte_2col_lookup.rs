@@ -439,28 +439,13 @@ impl<F: Field> KeccakBlockWitness<F> {
 
         let mut curr_acc_len = acc_len;
         let mut curr_acc_rlc = acc_rlc;
+
+        // FILL THIS PART 
+        // 
+        // 
+        // 
+
         
-        // for i in 0..KECCAK_RATE_IN_BYTES {
-        //     if i < d_bytes_block.len() { // data 
-        //         witness.d_bytes[i] = d_bytes_block[i];
-        //         curr_acc_len = curr_acc_len + 1; 
-        //         curr_acc_rlc = curr_acc_rlc * witness.randomness + F::from(witness.d_bytes[i] as u64)
-        //     } else {  // padding 
-        //         witness.is_pads[i] = true;
-        //     }
-        //     witness.d_lens[i] = curr_acc_len;
-        //     witness.d_rlcs[i] = curr_acc_rlc;
-        // }
-
-        // if d_bytes_block.len() < KECCAK_RATE_IN_BYTES { // some padding 
-        //     if d_bytes_block.len() == (KECCAK_RATE_IN_BYTES - 1) {
-        //         witness.d_bytes[KECCAK_RATE_IN_BYTES - 1] = 129;
-        //     } else {
-        //         witness.d_bytes[d_bytes_block.len()] = 128;
-        //         witness.d_bytes[KECCAK_RATE_IN_BYTES - 1] = 1;
-        //     }
-        // }
-
         if verbose {
             println!("\nWITNESS START");
             KeccakBlockWitness::<F>::print_keccac_padding_witness(witness, d_bytes_block.len());
