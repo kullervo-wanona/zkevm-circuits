@@ -58,7 +58,7 @@ impl<F: Field> PaddingCombinationsConfig<F> {
         }
     }
 
-    pub(crate) fn assign_table_row(&self, mut table: Table<'_, F>, row_id: usize, 
+    pub(crate) fn assign_table_row(&self, table: &mut Table<'_, F>, row_id: usize, 
                                    byte_val: u64, is_pad_val: u64, 
                                    is_pad_start_val: u64, is_pad_end_val: u64, 
                                   ) -> Result<(), Error> {
@@ -86,40 +86,17 @@ impl<F: Field> PaddingCombinationsConfig<F> {
             |mut table: Table<'_, F>| {
                 for i in 0..K {
                     //// byte = [0, 255], is_pad = 0, actual input data
-                    // self.assign_table_row(table, i as usize, i, 0, 0, 0);
-                    table.assign_cell(|| "byte_col_[i=0:K-1]", self.byte_col, i as usize, || Ok(F::from(i)))?;
-                    table.assign_cell(|| "is_padding_col_[i=0:K-1]", self.is_padding_col, i as usize, || Ok(F::from(0)))?;
-                    table.assign_cell(|| "is_padding_start_col_[i=0:K-1]", self.is_padding_start_col, i as usize, || Ok(F::from(0)))?;
-                    table.assign_cell(|| "is_padding_end_col_[i=0:K-1]", self.is_padding_end_col, i as usize, || Ok(F::from(0)))?;
+                    self.assign_table_row(&mut table, i as usize, i, 0, 0, 0)?;
                 }
-                
+                // Last four rows for padding
                 //// the middle of the padding case
-                // self.assign_table_row(table, K as usize, 0, 1, 0, 0);
-                table.assign_cell(|| "byte_col_[i=K]", self.byte_col, (K) as usize, || Ok(F::from(0)))?;
-                table.assign_cell(|| "is_padding_col_[i=K]", self.is_padding_col, (K) as usize, || Ok(F::from(1)))?;
-                table.assign_cell(|| "is_padding_start_col_[i=K]", self.is_padding_start_col, (K) as usize, || Ok(F::from(0)))?;
-                table.assign_cell(|| "is_padding_end_col_[i=K]", self.is_padding_end_col, (K) as usize, || Ok(F::from(0)))?;
-
+                self.assign_table_row(&mut table, K as usize, 0, 1, 0, 0)?;
                 //////the beginning of the padding separate from end case
-                // self.assign_table_row(table, (K + 1) as usize, 128, 1, 1, 0);
-                table.assign_cell(|| "byte_col_[i=K+1]", self.byte_col, (K + 1) as usize, || Ok(F::from(128)))?;
-                table.assign_cell(|| "is_padding_col_[i=K+1]", self.is_padding_col, (K + 1) as usize, || Ok(F::from(1)))?;
-                table.assign_cell(|| "is_padding_start_col_[i=K+1]", self.is_padding_start_col, (K + 1) as usize, || Ok(F::from(1)))?;
-                table.assign_cell(|| "is_padding_end_col_[i=K+1]", self.is_padding_end_col, (K + 1) as usize, || Ok(F::from(0)))?;
-
+                self.assign_table_row(&mut table, (K + 1) as usize, 128, 1, 1, 0)?;
                 //// the beginning/end of the padding same as end/beginning case
-                // self.assign_table_row(table, (K + 2) as usize, 129, 1, 1, 1);
-                table.assign_cell(|| "byte_col_[i=K+2]", self.byte_col, (K + 2) as usize, || Ok(F::from(129)))?;
-                table.assign_cell(|| "is_padding_col_[i=K+2]", self.is_padding_col, (K + 2) as usize, || Ok(F::from(1)))?;
-                table.assign_cell(|| "is_padding_start_col_[i=K+2]", self.is_padding_start_col, (K + 2) as usize, || Ok(F::from(1)))?;
-                table.assign_cell(|| "is_padding_end_col_[i=K+2]", self.is_padding_end_col, (K + 2) as usize, || Ok(F::from(1)))?;
-
+                self.assign_table_row(&mut table, (K + 2) as usize, 129, 1, 1, 1)?;
                 //// the end of the padding separate from beginning case
-                // self.assign_table_row(table, (K + 3) as usize, 1, 1, 0, 1);
-                table.assign_cell(|| "byte_col_[i=K+3]", self.byte_col, (K + 3) as usize, || Ok(F::from(1)))?;
-                table.assign_cell(|| "is_padding_col_[i=K+3]", self.is_padding_col, (K + 3) as usize, || Ok(F::from(1)))?;
-                table.assign_cell(|| "is_padding_start_col_[i=K+3]", self.is_padding_start_col, (K + 3) as usize, || Ok(F::from(0)))?;
-                table.assign_cell(|| "is_padding_end_col_[i=K+3]", self.is_padding_end_col, (K + 3) as usize, || Ok(F::from(1)))?;
+                self.assign_table_row(&mut table, (K + 3) as usize, 1, 1, 0, 1)?;
 
                 Ok(())
             },

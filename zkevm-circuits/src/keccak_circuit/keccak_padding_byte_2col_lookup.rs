@@ -30,7 +30,6 @@ fn get_degree() -> usize {
 // [is_pads]    0 (data)   0 (data)  (pad) 1   (pad) 1  (pad) 1
 // [d_bytes]       79         106       128       0        1  
 // [d_lens]      base+1     base+2    base+2   base+2   base+2
-// [rlc] 
 
 #[derive(Debug, Clone)]
 #[allow(missing_docs)]
@@ -50,7 +49,7 @@ impl<F: Field> PaddingCombinationsConfig<F> {
         }
     }
 
-    pub(crate) fn assign_table_row(&self, mut table: Table<'_, F>, row_id: usize, 
+    pub(crate) fn assign_table_row(&self, table: &mut Table<'_, F>, row_id: usize, 
                                    byte_val: u64, is_pad_val: u64, 
                                   ) -> Result<(), Error> {
         
@@ -75,30 +74,17 @@ impl<F: Field> PaddingCombinationsConfig<F> {
             |mut table: Table<'_, F>| {
                 for i in 0..K {
                     //// byte = [0, 255], is_pad = 0, actual input data
-                    // self.assign_table_row(table, i as usize, i, 0);
-                    table.assign_cell(|| "byte_col_[i=0:K-1]", self.byte_col, i as usize, || Ok(F::from(i)))?;
-                    table.assign_cell(|| "is_pad_col_[i=0:K-1]", self.is_pad_col, i as usize, || Ok(F::from(0)))?;
+                    self.assign_table_row(&mut table, i as usize, i, 0)?;
                 }
-                
+                // Last four rows for padding
                 //// byte = 0, is_pad = 1, the middle of the padding case
-                // self.assign_table_row(table, K as usize, 0, 1);
-                table.assign_cell(|| "byte_col_[i=K]", self.byte_col, (K) as usize, || Ok(F::from(0)))?;
-                table.assign_cell(|| "is_pad_col_[i=K]", self.is_pad_col, (K) as usize, || Ok(F::from(1)))?;
-
+                self.assign_table_row(&mut table, K as usize, 0, 1)?;
                 //// byte = 128, is_pad = 1, the beginning of the padding separate from end case
-                // self.assign_table_row(table, (K + 1) as usize, 128, 1);
-                table.assign_cell(|| "byte_col_[i=K+1]", self.byte_col, (K + 1) as usize, || Ok(F::from(128)))?;
-                table.assign_cell(|| "is_pad_col_[i=K+1]", self.is_pad_col, (K + 1) as usize, || Ok(F::from(1)))?;
-            
+                self.assign_table_row(&mut table, (K + 1) as usize, 128, 1)?;
                 //// byte = 129, is_pad = 1, the beginning of the padding same as end case
-                // self.assign_table_row(table, (K + 2) as usize, 129, 1);
-                table.assign_cell(|| "byte_col_[i=K+2]", self.byte_col, (K + 2) as usize, || Ok(F::from(129)))?;
-                table.assign_cell(|| "is_pad_col_[i=K+2]", self.is_pad_col, (K + 2) as usize, || Ok(F::from(1)))?;
-
+                self.assign_table_row(&mut table, (K + 2) as usize, 129, 1)?;
                 //// byte = 1, is_pad = 1, the end of the padding separate from beginning case
-                // self.assign_table_row(table, (K + 3) as usize, 1, 1);
-                table.assign_cell(|| "byte_col_[i=K+3]", self.byte_col, (K + 3) as usize, || Ok(F::from(1)))?;
-                table.assign_cell(|| "is_pad_col_[i=K+3]", self.is_pad_col, (K + 3) as usize, || Ok(F::from(1)))?;
+                self.assign_table_row(&mut table, (K + 3) as usize, 1, 1)?;
 
                 Ok(())
             },
@@ -454,26 +440,26 @@ impl<F: Field> KeccakBlockWitness<F> {
         let mut curr_acc_len = acc_len;
         let mut curr_acc_rlc = acc_rlc;
         
-        for i in 0..KECCAK_RATE_IN_BYTES {
-            if i < d_bytes_block.len() { // data 
-                witness.d_bytes[i] = d_bytes_block[i];
-                curr_acc_len = curr_acc_len + 1; 
-                curr_acc_rlc = curr_acc_rlc * witness.randomness + F::from(witness.d_bytes[i] as u64)
-            } else {  // padding 
-                witness.is_pads[i] = true;
-            }
-            witness.d_lens[i] = curr_acc_len;
-            witness.d_rlcs[i] = curr_acc_rlc;
-        }
+        // for i in 0..KECCAK_RATE_IN_BYTES {
+        //     if i < d_bytes_block.len() { // data 
+        //         witness.d_bytes[i] = d_bytes_block[i];
+        //         curr_acc_len = curr_acc_len + 1; 
+        //         curr_acc_rlc = curr_acc_rlc * witness.randomness + F::from(witness.d_bytes[i] as u64)
+        //     } else {  // padding 
+        //         witness.is_pads[i] = true;
+        //     }
+        //     witness.d_lens[i] = curr_acc_len;
+        //     witness.d_rlcs[i] = curr_acc_rlc;
+        // }
 
-        if d_bytes_block.len() < KECCAK_RATE_IN_BYTES { // some padding 
-            if d_bytes_block.len() == (KECCAK_RATE_IN_BYTES - 1) {
-                witness.d_bytes[KECCAK_RATE_IN_BYTES - 1] = 129;
-            } else {
-                witness.d_bytes[d_bytes_block.len()] = 128;
-                witness.d_bytes[KECCAK_RATE_IN_BYTES - 1] = 1;
-            }
-        }
+        // if d_bytes_block.len() < KECCAK_RATE_IN_BYTES { // some padding 
+        //     if d_bytes_block.len() == (KECCAK_RATE_IN_BYTES - 1) {
+        //         witness.d_bytes[KECCAK_RATE_IN_BYTES - 1] = 129;
+        //     } else {
+        //         witness.d_bytes[d_bytes_block.len()] = 128;
+        //         witness.d_bytes[KECCAK_RATE_IN_BYTES - 1] = 1;
+        //     }
+        // }
 
         if verbose {
             println!("\nWITNESS START");
